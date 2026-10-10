@@ -49,6 +49,7 @@ import {
     serviceFollowRoom,
     broadcastToSessionViewers,
     markPendingRecovery,
+    endSharedSession,
 } from "../sio-registry.js";
 import { isChildOfParent } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
@@ -60,6 +61,7 @@ import { isHiddenModel } from "../../routes/model-guard.js";
 import { createLogger } from "@pizzapi/tools";
 import { hydrateViewerFromCache } from "./viewer-cache.js";
 import { getBestSnapshot } from "./snapshot-provider.js";
+import { wakeSuspendedSession } from "../../events/transport.js";
 
 export { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-cache.js";
 
@@ -892,6 +894,10 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 // the summary is gone during that gap too.
                 // getLocalTuiSocket is already connected-aware — no need
                 // to re-check `.connected` here.
+                // A suspended session (idle worker exited) wakes on user input.
+                if (!getLocalTuiSocket(currentSessionId)) {
+                    await wakeSuspendedSession(currentSessionId);
+                }
                 if (!getLocalTuiSocket(currentSessionId)) {
                     const started = Date.now();
                     const back = await waitForLocalTuiSocket(currentSessionId, TUI_RECONNECT_WAIT_MS);
@@ -978,7 +984,17 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const currentSession = await getSharedSessionSummary(currentSessionId);
             if (!currentSession?.collabMode) return;
 
-            const tuiSocket = getLocalTuiSocket(currentSessionId);
+            let tuiSocket = getLocalTuiSocket(currentSessionId);
+            if (!tuiSocket && currentSession.suspended) {
+                // No worker to run it: ending a suspended session is done here;
+                // any other command wakes the session first.
+                if (data?.command === "end_session") {
+                    socket.emit("exec_result", { id: data.id, ok: true, command: "end_session", sessionId: currentSessionId });
+                    await endSharedSession(currentSessionId, "Session ended", { confirmedTerminal: true });
+                    return;
+                }
+                if (await wakeSuspendedSession(currentSessionId)) tuiSocket = getLocalTuiSocket(currentSessionId);
+            }
             if (!tuiSocket) return;
 
             tuiSocket.emit("exec" as string, data);

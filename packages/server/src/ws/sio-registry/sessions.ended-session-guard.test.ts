@@ -114,6 +114,7 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionState: async () => {},
     recordRelaySessionStateSerialized: async () => {},
     recordRelaySessionOverlay: async () => {},
+    markRelaySessionSuspended: async () => {},
     touchRelaySession: async () => {},
 }));
 

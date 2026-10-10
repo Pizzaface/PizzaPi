@@ -55,6 +55,8 @@ mock.module("../../sio-registry.js", () => ({
         if (localSocketMap.get(sessionId) === socket) localSocketMap.delete(sessionId);
     },
     broadcastToViewers: () => {},
+    suspendSharedSession: async () => false,
+    cancelSuspendedSession: async () => false,
     endSharedSession: async (
         sessionId: string,
         reason?: string,

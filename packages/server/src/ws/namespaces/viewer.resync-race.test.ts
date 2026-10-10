@@ -25,6 +25,10 @@ mock.module("../sio-state/index.js", () => ({ isChildOfParent: async () => false
 mock.module("./relay/index.js", () => ({ getPendingChunkedSnapshot: () => null }));
 mock.module("../../sessions/redis.js", () => ({ getLatestCachedSnapshotEvent: async () => null }));
 mock.module("../../sessions/store.js", () => ({ getPersistedRelaySessionSnapshot: async () => null }));
+// viewer.ts's suspended-session wake path pulls in the full events/transport.js
+// module graph (store, engine, runner-control, auth...) that this resync-race
+// test has no reason to exercise — stub the one export it uses.
+mock.module("../../events/transport.js", () => ({ wakeSuspendedSession: async () => false }));
 mock.module("../../sessions/trigger-store.js", () => ({ recordTriggerResponse: async () => undefined }));
 mock.module("../../user-hidden-models.js", () => ({ getHiddenModels: async () => [] }));
 mock.module("../../routes/model-guard.js", () => ({ isHiddenModel: () => false }));
@@ -62,6 +66,7 @@ mock.module("../sio-registry.js", () => ({
     serviceFollowRoom: () => "service-room",
     broadcastToSessionViewers: async () => undefined,
     markPendingRecovery: () => "nonce",
+    endSharedSession: async () => true,
 }));
 
 describe("viewer resync handler", () => {

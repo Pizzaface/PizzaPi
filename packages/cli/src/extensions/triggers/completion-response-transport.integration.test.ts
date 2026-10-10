@@ -26,6 +26,7 @@ mock.module(`${serverRoot}ws/sio-registry.js`, () => ({
     return sessionId === "parent" ? localSocket : null;
   },
   getSharedSession: async () => null,
+  getSharedSessionSummary: async () => null,
   linkSessionToRunner: async () => {},
   recordRunnerSession: async () => {},
   waitForLocalTuiSocket: async () => null,

@@ -28,6 +28,8 @@ export {
     getSessionLastHeartbeat,
     sendSnapshotToViewer,
     endSharedSession,
+    suspendSharedSession,
+    cancelSuspendedSession,
     getSessionOwnerToken,
     sweepExpiredSessions,
     sweepOrphanedSessions,

@@ -235,7 +235,18 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             // record before the hosting node can process the disconnect, turning
             // its endSharedSession into a no-op and stranding adopted-session
             // entries in runningSessions on the remote runner.
-            const terminated = await waitForChildTermination(childSessionId);
+            let terminated = await waitForChildTermination(childSessionId);
+            // The child suspended (worker exited, record kept) while the
+            // teardown signals were in flight — nothing will disconnect now,
+            // so end the record here. The parent's ack IS the genuine end: no
+            // worker will ever reconnect into a suspended child once its
+            // parent has acknowledged completion, so terminals must be killed
+            // and the spawn binding cleaned up (unlike the general
+            // suspend/orphan paths, which keep both alive for a possible wake).
+            if (!terminated && (await getSharedSessionSummary(childSessionId))?.suspended) {
+                await endSharedSession(childSessionId, "Parent acknowledged completion", { confirmedTerminal: true, killTerminals: true });
+                terminated = true;
+            }
             if (typeof ack === "function") {
                 (ack as (r: { ok: boolean; pending?: boolean; error?: string }) => void)(
                     terminated ? { ok: true } : { ok: true, pending: true },

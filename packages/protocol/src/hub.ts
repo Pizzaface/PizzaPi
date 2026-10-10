@@ -32,6 +32,8 @@ export interface HubServerToClientEvents {
     model: ModelInfo | null;
     runnerId?: string;
     runnerName?: string | null;
+    /** True when the worker exited idle and the session waits to be woken. */
+    suspended?: boolean;
   }) => void;
 
   state_snapshot: (data: { sessionId: string; state: SessionMetaState }) => void;

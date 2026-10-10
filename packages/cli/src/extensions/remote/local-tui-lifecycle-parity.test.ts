@@ -101,7 +101,7 @@ function makeRctx(overrides: Partial<RelayContext> = {}): RelayContext {
     } as unknown as RelayContext;
 }
 
-function makeMinimalDeps(rctxOverrides: Partial<RelayContext> = {}) {
+function makeMinimalDeps(rctxOverrides: Partial<RelayContext> = {}, delinkManagerOverrides: Record<string, (...args: any[]) => any> = {}) {
     const handlers = new Map<string, (event: any, ctx: any) => void>();
     const pi: any = {
         on: (name: string, fn: any) => handlers.set(name, fn),
@@ -118,6 +118,7 @@ function makeMinimalDeps(rctxOverrides: Partial<RelayContext> = {}) {
         clearPendingDelinkOwnParentRetryTimer: () => {},
         emitDelinkChildren: () => {},
         emitDelinkOwnParent: () => {},
+        ...delinkManagerOverrides,
     };
     const cancellationManager: any = {
         stopPendingCancellationRetryLoop: () => {},
@@ -140,7 +141,7 @@ function makeMinimalDeps(rctxOverrides: Partial<RelayContext> = {}) {
         clearCtx: () => {},
     });
 
-    return { handlers, state, rctx, pi };
+    return { handlers, state, rctx, pi, delinkManager, triggerWaits };
 }
 
 const minimalCtx = {
@@ -348,6 +349,83 @@ describe("local-TUI transition cleanup parity", () => {
             expect(state.pendingDelink).toBe(true);
             expect(state.sessionCompleteFired).toBe(false);
             expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+        });
+
+        // Suspend-wake respawn boot resume (PR #994 P1, live-test finding):
+        // initial-prompt.ts tags its boot-time switchSession(resumePath) call
+        // with { reason: "wake" } only when PIZZAPI_WAKE_RESUME was set by the
+        // daemon for a suspend-wake respawn (see runner/session-spawner.ts /
+        // runner/daemon.ts "wake" field threaded from server events/transport.ts
+        // wakeOfflineSession). That must NOT run performSessionTransitionCleanup
+        // — it is the SAME conversation continuing, not a new generation, and
+        // cleanup would delink the woken session from its parent and cancel its
+        // trigger subscriptions even though nothing about the conversation
+        // changed. A later real /resume inside the same worker (reason
+        // "resume", the default — no wake tag) must still clean up normally.
+        test("session_switch with reason:wake does NOT delink and keeps the parent link", () => {
+            process.env.PIZZAPI_WORKER_CWD = "/tmp/worker-cwd";
+            const emitDelinkChildren = mock(() => {});
+            const emitDelinkOwnParent = mock(() => {});
+            const { handlers, state, rctx, triggerWaits } = makeMinimalDeps(
+                { isChildSession: true, parentSessionId: "parent-session-1" },
+                { emitDelinkChildren, emitDelinkOwnParent },
+            );
+            const cancelAllSpy = mock(() => 0);
+            (triggerWaits as any).cancelAll = cancelAllSpy;
+            const sessionStart = handlers.get("session_start")!;
+            const sessionSwitch = handlers.get("session_switch")!;
+
+            sessionStart({ reason: "startup" }, minimalCtx);
+
+            state.staleChildIds.add("child-wake-stale");
+            state.sessionCompleteFired = true;
+            const genBefore = state.sessionCompleteGeneration;
+
+            sessionSwitch({ reason: "wake" }, minimalCtx);
+
+            // No delink, no cancellation, no trigger unsubscribe/history clear.
+            expect(emitDelinkChildren).not.toHaveBeenCalled();
+            expect(emitDelinkOwnParent).not.toHaveBeenCalled();
+            expect(cancelAllSpy).not.toHaveBeenCalled();
+            expect(state.pendingDelink).toBe(false);
+            expect(state.pendingDelinkOwnParent).toBe(false);
+            // Stale child ids are from the real prior generation's cleanup, not
+            // touched by this path — only performSessionTransitionCleanup clears
+            // staleChildIds, and wake must not call it.
+            expect(state.staleChildIds.has("child-wake-stale")).toBe(true);
+            // The parent link must survive a wake boot resume.
+            expect(rctx.isChildSession).toBe(true);
+            expect(rctx.parentSessionId).toBe("parent-session-1");
+            // Session-complete grace/arm state still resets so the woken session
+            // can fire session_complete again once idle (defensive-fallback
+            // branch still runs for any non-transition reason).
+            expect(state.sessionCompleteFired).toBe(false);
+            expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+        });
+
+        test("a real /resume after a wake boot still delinks and clears the parent link", () => {
+            process.env.PIZZAPI_WORKER_CWD = "/tmp/worker-cwd";
+            const { handlers, state, rctx } = makeMinimalDeps({ isChildSession: true, parentSessionId: "parent-session-1" });
+            const sessionStart = handlers.get("session_start")!;
+            const sessionSwitch = handlers.get("session_switch")!;
+
+            sessionStart({ reason: "startup" }, minimalCtx);
+            // Wake boot resume — keeps the link (asserted in the previous test).
+            sessionSwitch({ reason: "wake" }, minimalCtx);
+            expect(rctx.isChildSession).toBe(true);
+            expect(state.pendingDelink).toBe(false);
+
+            // User later runs a real /resume inside this same woken worker.
+            sessionSwitch({ reason: "resume" }, minimalCtx);
+
+            // performSessionTransitionCleanup runs (unlike the wake boot above):
+            // pendingDelink/pendingDelinkOwnParent flip, and the parent link is
+            // actually cleared on rctx — matching the pre-existing
+            // reason:resume/fork parity test above.
+            expect(state.pendingDelink).toBe(true);
+            expect(state.pendingDelinkOwnParent).toBe(true);
+            expect(rctx.isChildSession).toBe(false);
+            expect(rctx.parentSessionId).toBeNull();
         });
     });
 });

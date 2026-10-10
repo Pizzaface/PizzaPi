@@ -61,6 +61,33 @@ export interface RunnerSession {
     parentSessionId?: string;
     /** JSONL transcript file for this relay session, reported by the worker after startup. */
     sessionFile?: string;
+    /**
+     * True once this worker's "pre_suspend" IPC has been received: it is
+     * exiting idle but the relay still owns the session and the entry is
+     * still in `runningSessions` until `child.on("exit")` fires. A wake that
+     * lands in this window must defer its respawn to that exit instead of
+     * throwing "Session already running" (see spawnSession).
+     */
+    suspending?: boolean;
+    /**
+     * Set by a wake (new_session) that arrived while `suspending` was true.
+     * Invoked from inside this same worker's own "exit" handler, in its
+     * suspended branch — never when the session was killed in the meantime,
+     * because a kill routes exit handling to the true-termination branch
+     * instead. Checking `killedSessions` again at invocation time would race
+     * that branch's own cleanup, which deletes the session from
+     * `killedSessions` as part of settling it.
+     *
+     * A later wake landing in the same suspending window replaces this with
+     * its own respawn and cancels `pendingWakeTimer` below — only the latest
+     * wake's attempt is ever actually run — but every waiter queued up while
+     * superseded (`pendingWakeWaiters`) still hears that attempt's outcome.
+     */
+    pendingWakeRespawn?: () => void;
+    /** Startup-timeout timer backing the current `pendingWakeRespawn`; cleared and replaced whenever a newer wake supersedes it. */
+    pendingWakeTimer?: ReturnType<typeof setTimeout>;
+    /** `onStartup` callbacks of every wake queued in this suspending window, notified together once `pendingWakeRespawn` settles. */
+    pendingWakeWaiters?: Array<(result: WorkerStartupResult) => void>;
 }
 
 /**
@@ -263,6 +290,15 @@ export function spawnSession(
         resumePath?: string;
         autoClose?: boolean;
         /**
+         * True only for a suspend-wake respawn resuming `resumePath` (see
+         * wakeOfflineSession in events/transport.ts): the SAME conversation
+         * continuing, not a new generation. Threaded to the worker as
+         * PIZZAPI_WAKE_RESUME so it skips session-transition cleanup
+         * (delink_own_parent/delink_children, trigger unsubscribe) that a
+         * real /resume runs — a wake must keep the parent link intact.
+         */
+        isWake?: boolean;
+        /**
          * Override the SIGTERM→SIGKILL escalation delay for tests.
          * @internal
          */
@@ -291,7 +327,70 @@ export function spawnSession(
 ): void {
     logInfo(`spawning headless worker for session ${sessionId}…`);
 
-    if (runningSessions.has(sessionId)) {
+    const existing = runningSessions.get(sessionId);
+    if (existing) {
+        if (existing.suspending && existing.child) {
+            // A wake (new_session) arrived after the relay accepted this
+            // session's suspend but before the old worker's process actually
+            // exited — it is still in runningSessions. Record the respawn on
+            // the entry instead of throwing here (which would otherwise
+            // surface as session_error and strand the wake with no one left
+            // to respawn it); the old worker's own exit handler invokes it
+            // from its suspended branch once the slot is actually free.
+            // Bounded by the worker-startup timeout.
+            logInfo(`session ${sessionId} wake arrived before its suspending worker exited; deferring respawn to its exit`);
+
+            // A later wake landing in this same suspending window supersedes
+            // this one: cancel the previous timer right away instead of
+            // leaving it to independently fire `onStartup({ ok: false })`
+            // later even though the newer wake's respawn goes on to succeed
+            // (review 994-r3 #2). Its onStartup is kept in `pendingWakeWaiters`
+            // so it still hears the single outcome once the (now sole) pending
+            // respawn settles, instead of being dropped.
+            if (existing.pendingWakeTimer) clearTimeout(existing.pendingWakeTimer);
+            const waiters = existing.pendingWakeWaiters ?? [];
+            if (options?.onStartup) waiters.push(options.onStartup);
+            existing.pendingWakeWaiters = waiters;
+
+            let settled = false;
+            const settle = (result: WorkerStartupResult): void => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                // Only clear the shared entry if we're still the current deferred
+                // attempt — a newer wake may have superseded us already (and
+                // already cleared/replaced these fields itself).
+                if (existing.pendingWakeRespawn === respawn) {
+                    existing.pendingWakeRespawn = undefined;
+                    existing.pendingWakeTimer = undefined;
+                    existing.pendingWakeWaiters = undefined;
+                }
+                for (const notify of waiters) notify(result);
+            };
+            const respawn = (): void => {
+                // The daemon's own doSpawn() wraps its top-level spawnSession
+                // call in try/catch (cwd deleted/not-a-dir/outside workspace
+                // root, worker entrypoint missing, …) — but this deferred call
+                // runs from inside the old worker's own "exit" handler, bypassing
+                // that. An uncaught throw here would crash the runner daemon and
+                // take every other session on it down too (review 994-r3 #1).
+                try {
+                    spawnSession(sessionId, apiKey, relayUrl, requestedCwd, runningSessions, restartingSessions, killedSessions, onRestartRequested, {
+                        ...options,
+                        onStartup: settle,
+                    });
+                } catch (err) {
+                    settle({ ok: false, message: err instanceof Error ? err.message : String(err) });
+                }
+            };
+            const timer = setTimeout(() => {
+                logInfo(`session ${sessionId} suspending worker did not exit within ${WORKER_STARTUP_TIMEOUT_MS}ms; giving up on the deferred respawn`);
+                settle({ ok: false, message: `Session ${sessionId} did not finish suspending in time to resume it` });
+            }, WORKER_STARTUP_TIMEOUT_MS);
+            existing.pendingWakeRespawn = respawn;
+            existing.pendingWakeTimer = timer;
+            return;
+        }
         throw new Error(`Session already running: ${sessionId}`);
     }
 
@@ -383,6 +482,7 @@ export function spawnSession(
         ...(options?.agent?.tools ? { PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools } : {}),
         ...(options?.agent?.disallowedTools ? { PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: options.agent.disallowedTools } : {}),
         ...(options?.resumePath ? { PIZZAPI_WORKER_RESUME_PATH: options.resumePath } : {}),
+        ...(options?.isWake ? { PIZZAPI_WAKE_RESUME: "1" } : {}),
         ...(options?.autoClose ? { PIZZAPI_WORKER_AUTO_CLOSE: "true" } : {}),
     };
     // Pin pi packages' runtime pi imports to the host copy (see host-pi-node-path.ts).
@@ -414,9 +514,23 @@ export function spawnSession(
     // Pre-restart IPC signal: the worker sends this before calling process.exit(43).
     // Marking restartingSessions here (synchronously, while the worker is still
     // alive) guarantees the guard is set before any relay session_ended event arrives.
+    // Set by the worker's "pre_suspend" IPC: it is exiting idle while the relay
+    // keeps the session, and a wake respawns it under the same ID.
+    let suspended = false;
     child.on("message", (msg: unknown) => {
         if (typeof msg !== "object" || msg === null) return;
         const message = msg as Record<string, unknown>;
+        if (message.type === "pre_suspend") {
+            suspended = true;
+            // Flag the shared entry too (not just this closure's local var) so a
+            // concurrent spawnSession() call for the same sessionId — a wake
+            // landing before this worker's exit — can see it and defer instead
+            // of throwing "Session already running".
+            const running = runningSessions.get(sessionId);
+            if (running) running.suspending = true;
+            logInfo(`session ${sessionId} suspending via IPC`);
+            return;
+        }
         if (message.type === "pre_restart") {
             restartingSessions.add(sessionId);
             logInfo(`session ${sessionId} signaled pre-restart via IPC`);
@@ -445,9 +559,27 @@ export function spawnSession(
     trackSessionCwd(sessionId, effectiveCwd);
 
     child.on("exit", (code, signal) => {
-        runningSessions.delete(sessionId);
-        untrackSessionCwd(sessionId, effectiveCwd);
+        // A wake may already have respawned this session — never drop its entry.
+        const current = runningSessions.get(sessionId);
+        if (!current || current.child === child) {
+            runningSessions.delete(sessionId);
+            untrackSessionCwd(sessionId, effectiveCwd);
+        }
         logInfo(`session ${sessionId} exited (code=${code}, signal=${signal})`);
+        if (suspended && !killedSessions.has(sessionId)) {
+            // Suspended, not ended: keep attachments and session services for
+            // the resumed worker. Only reap this worker's own process group.
+            if (killSessionProcessGroup(child.pid)) {
+                logInfo(`session ${sessionId} suspended worker group ${child.pid} signaled for cleanup`);
+            }
+            if (!runningSessions.has(sessionId)) removeSessionProcFile(sessionId);
+            // A wake that arrived while this worker was mid-suspend (see the
+            // deferred-wake guard in spawnSession above) registered its respawn
+            // here instead of racing "Session already running" against the
+            // runningSessions entry we just freed.
+            current?.pendingWakeRespawn?.();
+            return;
+        }
         if (code === 43 && onRestartRequested && !killedSessions.has(sessionId)) {
             // Restart-in-place: re-spawn immediately without touching attachments.
             // The session continues under the same ID — files saved to

@@ -58,6 +58,9 @@ import type { CancellationManager } from "./trigger-cancellation.js";
 import { isManualAbort } from "./followup-grace.js";
 import type { FollowUpGraceManager } from "./followup-grace.js";
 import { slimForwardedEvent } from "./slim-forwarded-event.js";
+import { canSuspendWorker, cancelSuspend, requestSuspend, shouldSuspend } from "./suspend.js";
+import { runningBackgroundJobCount } from "../background-bash.js";
+import { messageBus } from "../session-message-bus.js";
 
 const log = createLogger("remote");
 const LINKED_CHILD_COUNT_TIMEOUT_MS = 2_000;
@@ -394,12 +397,24 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         // next one). Only "new" used to run full cleanup here, which let a
         // /resume or /fork on the worker path inherit the prior generation's
         // stale children — see A1-007 follow-up (GM a8yAXXwa).
+        //
+        // "wake" is deliberately NOT a transition reason: it is a suspend-wake
+        // boot resume (initial-prompt.ts, tagged via sessionControlActions.
+        // switchSession's `reason` option — see runner/worker.ts), i.e. the
+        // SAME conversation continuing, not a new generation. Running
+        // performSessionTransitionCleanup there would delink the woken
+        // session from its parent (and cancel its trigger subscriptions)
+        // even though nothing about the conversation actually changed —
+        // only this boot transition is tagged "wake"; a later real /resume
+        // inside the same worker still passes no reason override and runs
+        // full cleanup below.
         if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
             performSessionTransitionCleanup({ state, rctx, triggerWaits, delinkManager, cancellationManager, followUpGrace });
         } else {
-            // Defensive fallback for any other/unknown reason: still reset
-            // session-complete generation state so a stale "fired" flag can't
-            // leak into the next conversation.
+            // Defensive fallback for "wake" and any other/unknown reason:
+            // still reset session-complete generation state (so the session
+            // can arm/fire session_complete again once idle) but skip delink
+            // and trigger cleanup — the parent link must stay intact.
             state.sessionCompleteFired = false;
             state.sessionCompleteGeneration += 1;
             state.pendingSessionCompleteDelivery = null;
@@ -512,6 +527,68 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         settledMessages = runMessages ?? [];
     });
 
+    /**
+     * Exit the worker of an idle completed child while the relay keeps the
+     * session (suspend). Called by the follow-up grace's idle timer; returns
+     * false to be retried later.
+     */
+    async function trySuspendIdleChild(ctx: any): Promise<boolean> {
+        const generation = state.sessionCompleteGeneration;
+        const localProbe = () => ({
+            sessionCompleteDelivered: state.sessionCompleteFired,
+            // ctx.hasPendingMessages() only sees pi's own turn-input queue; a plain
+            // send_message (no deliverAs) is queued separately in the inter-session
+            // message bus and is invisible to pi, so fold it in here too — otherwise
+            // an unconsumed message sitting in the bus would never block suspension.
+            hasPendingMessages: ctx.hasPendingMessages() || messageBus.pendingCount() > 0,
+            isAgentBusy: rctx.isAgentActive || rctx.isAgentSettling || rctx.shuttingDown,
+            activeSubagents: hasActiveSubagents(),
+            runningBackgroundJobs: runningBackgroundJobCount(),
+        });
+        // Cheap local checks first; skip the relay probes when they already fail.
+        if (!shouldSuspend({ ...localProbe(), activeSubscriptionCount: 0, linkedChildCount: 0 })) return false;
+
+        const sessionId = rctx.relaySessionId;
+        const activeSubscriptionCount = sessionId
+            ? await listTriggerSubscriptions(sessionId).then((subs) => subs.length).catch(() => null)
+            : null;
+        const linkedChildCount = await getLinkedChildCount(rctx);
+        if (state.sessionCompleteGeneration !== generation) return false;
+        if (!shouldSuspend({ ...localProbe(), activeSubscriptionCount, linkedChildCount })) return false;
+
+        if (!(await requestSuspend(rctx))) return false;
+
+        // The relay stopped routing to us the instant it accepted the suspend
+        // above — but this socket stayed fully connected throughout that ack
+        // round trip, so a send_message / trigger / user input arriving during
+        // it was handled by its own listener same as always (just with the
+        // relay already treating us as suspended). Re-check right before
+        // committing to exit: if anything is no longer idle, the work already
+        // landed here and would be lost with the worker — abort instead and ask
+        // the relay to restore routing on this same, still-live socket.
+        if (state.sessionCompleteGeneration !== generation || !shouldSuspend({ ...localProbe(), activeSubscriptionCount, linkedChildCount })) {
+            const cancelled = await cancelSuspend(rctx);
+            if (!cancelled) {
+                // ponytail: the relay may be unreachable right when we need to undo
+                // the suspend it already committed; a future delivery to this
+                // (still suspended-on-relay, still-alive) session would then take
+                // the wake path and spawn a redundant second worker rather than
+                // reaching this one directly. Self-heals on the next natural
+                // reconnect/register; upgrade path is a retry loop here if this
+                // proves to happen in practice.
+                log.warn("pizzapi: could not cancel suspend after new work arrived — relay may route via wake until this worker reconnects");
+            }
+            return false;
+        }
+
+        rctx.suspending = true;
+        log.info("pizzapi: idle child suspended — exiting worker; the next message wakes it");
+        // Tell the daemon first so it keeps attachments for the resume.
+        process.send?.({ type: "pre_suspend" });
+        ctx.shutdown();
+        return true;
+    }
+
     function handleAgentSettled(_event: any, ctx: any) {
         rctx.isAgentSettling = false;
         if (settledMessages === null) return; // settled without a preceding agent_end
@@ -610,7 +687,12 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             if (rctx.isChildSession) {
                 // No grace-period auto-shutdown after a manual abort — the user
                 // took control and will steer or end the session themselves.
-                if (!manualAbort) followUpGrace.startFollowUpGrace(ctx);
+                if (!manualAbort) {
+                    followUpGrace.startFollowUpGrace(
+                        ctx,
+                        canSuspendWorker() ? () => trySuspendIdleChild(ctx) : undefined,
+                    );
+                }
             } else if (process.env.PIZZAPI_WORKER_AUTO_CLOSE === "true" && exitReason === "completed") {
                 // Auto-close: trigger-spawned sessions with autoClose shut down
                 // immediately on successful completion — no follow-up grace.

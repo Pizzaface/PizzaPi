@@ -3,13 +3,16 @@
  *
  * After a child session's agent_end, it fires session_complete and then
  * waits for the parent to deal with it — ack, follow up, or explicitly tear
- * it down (cleanup_child_session / delink). There is no auto-shutdown clock:
- * a completed child is cheap to leave idle, and a timer here would repeat
- * the exact bug this module's sibling fix addressed for waitForTriggerResponse
- * — killing a session out from under a parent that just hasn't gotten to it
- * yet. The only shutdown paths are explicit: new work arriving (turn_start
- * clears the grace state) or the parent permanently delinking
- * (shutdownFollowUpGraceImmediately, a real event, not a timeout).
+ * it down (cleanup_child_session / delink). There is no auto-END clock: a
+ * timer that ends the session would repeat the bug this module's sibling fix
+ * addressed for waitForTriggerResponse — killing a session out from under a
+ * parent that just hasn't gotten to it yet. The only end paths are explicit:
+ * new work arriving (turn_start clears the grace state) or the parent
+ * permanently delinking (shutdownFollowUpGraceImmediately).
+ *
+ * An idle child is NOT cheap, though (150–700 MB per worker), so after
+ * SUSPEND_IDLE_MS the grace may SUSPEND it: the worker exits but the relay
+ * keeps the session, and the next message wakes it (see suspend.ts).
  *
  * fireSessionComplete emits the session_complete trigger to the parent once
  * and is idempotent thereafter.
@@ -20,6 +23,7 @@
 import { createLogger } from "@pizzapi/tools";
 import type { RelayContext } from "../remote-types.js";
 import { buildSessionCompleteTrigger } from "./session-complete-delivery.js";
+import { getSuspendIdleMs } from "./suspend.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 
 const SESSION_COMPLETE_RETRY_MS = 3_000;
@@ -41,6 +45,8 @@ export interface FollowUpGraceState {
     sessionCompleteFired: boolean;
     /** The shutdown callback to invoke if the parent explicitly delinks. No timer ever fires this on its own. */
     followUpGraceShutdown: (() => void) | null;
+    /** Idle timer that tries to suspend the worker (never ends the session). */
+    suspendTimer?: ReturnType<typeof setTimeout> | null;
     /** Increments on each new turn/session so stale completion promises can be ignored. */
     sessionCompleteGeneration: number;
     /** Increments on relay disconnect so in-flight sends on the old transport are not reused after reconnect. */
@@ -79,6 +85,10 @@ export function createFollowUpGrace(
             clearTimeout(state.sessionCompleteRetryTimer);
             state.sessionCompleteRetryTimer = null;
         }
+        if (state.suspendTimer) {
+            clearTimeout(state.suspendTimer);
+            state.suspendTimer = null;
+        }
         state.followUpGraceShutdown = null;
     }
 
@@ -93,15 +103,31 @@ export function createFollowUpGrace(
     }
 
     /**
-     * Arm the follow-up grace: remember how to shut down, but never do so on
-     * a clock. The session waits — indefinitely — for the parent to ack,
-     * follow up (clearFollowUpGrace via turn_start), or explicitly delink
-     * (shutdownFollowUpGraceImmediately).
+     * Arm the follow-up grace: remember how to shut down, but never end the
+     * session on a clock. The session waits — indefinitely — for the parent
+     * to ack, follow up (clearFollowUpGrace via turn_start), or explicitly
+     * delink (shutdownFollowUpGraceImmediately).
+     *
+     * With `trySuspend`, every getSuspendIdleMs() the grace asks it to
+     * suspend the worker; it re-arms until that succeeds or the grace is
+     * cleared. Read fresh on each re-arm so a changed
+     * PIZZAPI_SUSPEND_IDLE_MS takes effect without a restart.
      */
-    function startFollowUpGrace(ctx: { shutdown: () => void }): void {
+    function startFollowUpGrace(ctx: { shutdown: () => void }, trySuspend?: () => Promise<boolean>): void {
         clearFollowUpGrace();
         state.followUpGraceShutdown = ctx.shutdown;
         logger.info("pizzapi: session complete — waiting for parent ack/follow-up (no auto-shutdown)");
+        if (!trySuspend) return;
+        const shutdown = ctx.shutdown;
+        const arm = () => {
+            state.suspendTimer = setTimeout(async () => {
+                state.suspendTimer = null;
+                const suspended = await trySuspend().catch(() => false);
+                // Re-arm only while this same grace is still the active one.
+                if (!suspended && state.followUpGraceShutdown === shutdown && !state.suspendTimer) arm();
+            }, getSuspendIdleMs());
+        };
+        arm();
     }
 
     /**

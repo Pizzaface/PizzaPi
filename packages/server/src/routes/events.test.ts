@@ -62,6 +62,7 @@ const modsPromise = (async () => {
       viewerBroadcasts.push({ sessionId, event, data });
     },
     getLocalRunnerSocket: () => null,
+    getSharedSessionSummary: async () => null,
     linkSessionToRunner: async () => {},
     recordRunnerSession: async () => {},
     waitForLocalTuiSocket: async () => true,

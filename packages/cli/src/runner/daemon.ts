@@ -1756,7 +1756,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         socket.on("new_session", async (data: any) => {
             if (isShuttingDown) return;
-            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, imageUrls: requestedImageUrls, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId, resumePath: requestedResumePath, resumeId: requestedResumeId, autoClose: requestedAutoClose } = data;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, imageUrls: requestedImageUrls, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId, resumePath: requestedResumePath, resumeId: requestedResumeId, autoClose: requestedAutoClose, wake: requestedWake } = data;
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -1872,8 +1872,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // Only pass initial prompt/model on the first spawn.
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
+                    // `isWake` is likewise first-spawn-only: a wake always lands
+                    // as a brand-new `new_session` socket event (the suspended
+                    // worker already exited, freeing the slot), so it is always
+                    // this session's first spawn under this handler's closure —
+                    // never set on a restart-in-place respawn.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }
+                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true, isWake: requestedWake === true, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);

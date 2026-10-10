@@ -183,6 +183,13 @@ function listJobsText(): string {
         .join("\n");
 }
 
+/** Background jobs still running — they die with the worker, so they block suspend. */
+export function runningBackgroundJobCount(): number {
+    let n = 0;
+    for (const job of jobs.values()) if (job.endedAt === undefined) n++;
+    return n;
+}
+
 /** Commands currently running in the foreground (i.e. backgroundable right now). */
 export function pendingCommands(): string[] {
     return [...waiting.values()].map((j) => j.command);

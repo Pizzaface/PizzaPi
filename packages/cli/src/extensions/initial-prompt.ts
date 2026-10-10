@@ -52,6 +52,15 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     const agentTools = process.env.PIZZAPI_WORKER_AGENT_TOOLS?.trim();
     const agentDisallowedTools = process.env.PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS?.trim();
     const resumePath = process.env.PIZZAPI_WORKER_RESUME_PATH?.trim();
+    // Set only for a suspend-wake respawn (see wakeOfflineSession in
+    // server/src/events/transport.ts → daemon.ts's new_session handler →
+    // session-spawner.ts): the SAME conversation resuming, not a new
+    // generation. Tags the switchSession call below so the remote
+    // extension's session_switch handler skips delink_own_parent/
+    // delink_children/trigger-unsubscribe for this one boot transition —
+    // a later real /resume inside this same worker still runs cleanup
+    // normally (that call never passes this option).
+    const isWakeResume = process.env.PIZZAPI_WAKE_RESUME === "1";
     const hasInitialContent = Boolean(initialPrompt) || initialImageUrls.length > 0;
 
     // Nothing to do if no initial prompt/images, initial model, agent, or resume path was set.
@@ -65,6 +74,7 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID;
     delete process.env.PIZZAPI_WORKER_INITIAL_EFFORT;
     delete process.env.PIZZAPI_WORKER_RESUME_PATH;
+    delete process.env.PIZZAPI_WAKE_RESUME;
 
     let fired = false;
 
@@ -210,7 +220,10 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
             try {
                 const sessionHost = getRemoteSessionHost();
                 if (sessionHost) {
-                    const result = await sessionHost.switchSession(resumePath);
+                    const result = await sessionHost.switchSession(
+                        resumePath,
+                        isWakeResume ? { reason: "wake" } : undefined,
+                    );
                     if (result?.cancelled) {
                         log.warn(`pizzapi worker: resume of ${resumePath} was cancelled`);
                     } else {

@@ -15,7 +15,7 @@ import { useHubSocket } from "@/lib/hub-socket-context";
 import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, Code2, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, Code2, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy, Moon } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { countSessionStatuses, getSessionVisualState, type SessionStatusCounts } from "@/lib/session-visual-state";
@@ -40,6 +40,8 @@ interface HubSession {
     runnerName?: string | null;
     isPinned?: boolean;
     parentSessionId?: string | null;
+    /** Worker exited idle; the session wakes on the next message. */
+    suspended?: boolean;
 }
 
 interface PinnedSession {
@@ -754,7 +756,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         const handleSessionAdded = (data: unknown) => {
             const s = data as unknown as HubSession;
             setLiveSessions((prev) => {
-                if (prev.some((p) => p.sessionId === s.sessionId)) return prev;
+                // Re-registration of a known session (e.g. a suspended one
+                // waking up) only refreshes its suspended flag.
+                if (prev.some((p) => p.sessionId === s.sessionId)) {
+                    return prev.map((p) => p.sessionId === s.sessionId ? { ...p, suspended: s.suspended === true } : p);
+                }
                 return [
                     ...prev,
                     {
@@ -773,6 +779,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         runnerId: s.runnerId ?? null,
                         runnerName: s.runnerName ?? null,
                         parentSessionId: s.parentSessionId ?? null,
+                        suspended: s.suspended === true,
                     },
                 ];
             });
@@ -790,6 +797,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             sessionName?: string | null;
             runnerId?: string | null;
             runnerName?: string | null;
+            suspended?: boolean;
         }) => {
             const { sessionId, isActive, lastHeartbeatAt, model, sessionName, runnerId, runnerName } = data;
             setLiveSessions((prev) =>
@@ -798,6 +806,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         ? {
                               ...s,
                               isActive,
+                              // Only a live worker reports status, so any update without the flag means awake.
+                              suspended: data.suspended === true,
                               lastHeartbeatAt,
                               model: model === undefined ? (s.model ?? null) : model,
                               sessionName: sessionName === undefined ? (s.sessionName ?? null) : sessionName,
@@ -1607,7 +1617,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         aria-label={(() => {
                                                             const nm = s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}`;
                                                             if (selectMode) return `${isChecked ? "Deselect" : "Select"} ${nm}`;
-                                                            const st = s.isActive ? "active" : "idle";
+                                                            const st = s.isActive ? "active" : s.suspended ? "suspended" : "idle";
                                                             return `${nm}, ${st}${isPinned ? ", pinned" : ""}`;
                                                         })()}
                                                         data-session-row=""
@@ -1702,6 +1712,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             visualState === "active" && sessionsCompacting?.has(s.sessionId) && "text-sidebar-foreground animate-compacting-chase",
                                                             visualState === "completedUnread" && "text-sidebar-foreground animate-completed-pulse",
                                                             visualState === "idle" && "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                                            s.suspended && visualState === "idle" && "opacity-60",
                                                         )}
                                                         style={{
                                                             transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,
@@ -1795,6 +1806,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                         <span className="text-[0.6rem] text-blue-400/70 mr-1" title="Child session">↳</span>
                                                                     )}
                                                                     {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
+                                                                    {s.suspended && (
+                                                                        <span title="Suspended — the next message wakes it" className="ml-1 inline-flex align-middle text-sidebar-foreground/50">
+                                                                            <Moon className="h-3 w-3" aria-hidden="true" />
+                                                                        </span>
+                                                                    )}
                                                                 </span>
                                                                 <span className="text-[0.65rem] text-sidebar-foreground/60 flex-shrink-0">
                                                                     {timeLabel}

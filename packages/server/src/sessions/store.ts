@@ -304,6 +304,20 @@ export async function touchRelaySession(sessionId: string): Promise<void> {
 }
 
 /**
+ * A suspended session is still addressable: drop its ephemeral expiry so the
+ * prune sweep cannot hard-delete it. The wake registration (start upsert) or
+ * the final end restores an expiry.
+ */
+export async function markRelaySessionSuspended(sessionId: string): Promise<void> {
+    await getKysely()
+        .updateTable("relay_session")
+        .set({ lastActiveAt: new Date().toISOString(), expiresAt: null })
+        .where("id", "=", sessionId)
+        .where("endedAt", "is", null)
+        .execute();
+}
+
+/**
  * Persist session state for `sessionId`.
  *
  * `userId` is required for ownership validation: if the persisted

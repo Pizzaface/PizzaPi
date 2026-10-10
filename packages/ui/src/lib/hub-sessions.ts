@@ -16,6 +16,8 @@ export interface HubSessionPayload {
   runnerName?: string | null;
   isPinned?: boolean;
   parentSessionId?: string | null;
+  /** Worker exited idle; the session wakes on the next message. */
+  suspended?: boolean;
 }
 
 function isHubSession(value: unknown): value is HubSessionPayload {

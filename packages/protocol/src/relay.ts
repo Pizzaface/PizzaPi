@@ -75,6 +75,28 @@ export interface RelayClientToServerEvents {
     final?: boolean;
   }, acknowledge?: (result: { ended: boolean }) => void) => void;
 
+  /**
+   * Idle worker asks to exit while keeping the session addressable. On ok the
+   * relay marks it suspended (a later message wakes it) and the worker exits
+   * without session_end.
+   */
+  session_suspend: (data: {
+    sessionId: string;
+    token: string;
+  }, acknowledge?: (result: { ok: boolean }) => void) => void;
+
+  /**
+   * Abort a session_suspend the relay already accepted: work (a
+   * send_message, trigger, or user input) arrived on this still-connected
+   * socket during the ack round trip, caught by a final local check before
+   * the worker exited. On ok the relay restores routing on this SAME
+   * socket — no new worker process, nothing lost.
+   */
+  session_suspend_cancel: (data: {
+    sessionId: string;
+    token: string;
+  }, acknowledge?: (result: { ok: boolean }) => void) => void;
+
   /** TUI responds to a previously-received exec command */
   exec_result: (data: {
     id: string;

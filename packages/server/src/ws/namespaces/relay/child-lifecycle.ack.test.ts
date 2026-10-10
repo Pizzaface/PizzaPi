@@ -156,6 +156,35 @@ describe("cleanup_child_session ack ordering", () => {
         expect(endedSessions).toEqual([]);
     });
 
+    it("kills terminals + confirms terminal when the unterminated child suspended mid-teardown", async () => {
+        // The child's worker exited and suspended the session (record kept,
+        // suspended:true) while the cleanup exec/kill_session signals were
+        // still in flight. The parent's ack IS the genuine end here — no
+        // worker will ever reconnect into a suspended child once its parent
+        // has acknowledged completion — so this must kill terminals and
+        // confirm-terminal, unlike the general suspend/orphan paths which
+        // keep both alive for a possible wake.
+        seed("parent", "child", { suspended: true });
+        relayPresence = { kind: "count", count: 1 }; // not torn down by the fast path
+        childTerminationWait.timeoutMs = 0; // never "terminated" (record stays present)
+        const { socket, fire } = makeSocket("parent");
+        registerChildLifecycleHandlers(socket, makeIo());
+
+        const ack = (await fire("cleanup_child_session", { token: "tok", childSessionId: "child" })) as {
+            ok: boolean;
+            pending?: boolean;
+        };
+        expect(ack.ok).toBe(true);
+        expect(ack.pending).toBeUndefined();
+        expect(endedSessions).toEqual([
+            {
+                sessionId: "child",
+                reason: "Parent acknowledged completion",
+                opts: { confirmedTerminal: true, killTerminals: true },
+            },
+        ]);
+    });
+
     it("removes the stale membership entry when the child is already gone", async () => {
         sessions.set("parent", { sessionId: "parent", userId: "u1", parentSessionId: null });
         childSets.set("parent", new Set(["ghost-child"]));

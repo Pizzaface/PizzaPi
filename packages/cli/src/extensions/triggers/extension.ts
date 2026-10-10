@@ -74,7 +74,9 @@ export const receivedTriggers = new Map<string, { sourceSessionId: string; type:
 const handledTriggerTombstones = new Map<string, number>();
 
 const TRIGGER_RESPONSE_ACK_TIMEOUT_MS = 10_000;
-export const SESSION_MESSAGE_ACK_TIMEOUT_MS = 20_000;
+// Covers waking a suspended target (respawn + register, up to ~15s) plus
+// the input delivery ack.
+export const SESSION_MESSAGE_ACK_TIMEOUT_MS = 35_000;
 
 type SessionMessageAck = {
     ok: boolean;
@@ -458,30 +460,17 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 const action = params.action ?? "ack";
                 if (action === "followUp") {
                     // Deliver as agent input so it starts a new turn in the child.
-                    // Wait for session_message_error to detect delivery failures.
+                    // Acked: a suspended child is woken first, which can take
+                    // seconds, so a fixed error window would miss failures.
                     const childId = pending.sourceSessionId;
-                    const result = await new Promise<{ ok: boolean; text: string }>((resolve) => {
-                        const timeout = setTimeout(() => {
-                            conn.socket.off("session_message_error", onError);
-                            resolve({ ok: true, text: `Follow-up sent to child ${childId}` });
-                        }, 3000);
-
-                        const onError = (err: { targetSessionId: string; error: string }) => {
-                            if (err.targetSessionId === childId) {
-                                clearTimeout(timeout);
-                                conn.socket.off("session_message_error", onError);
-                                resolve({ ok: false, text: `Error sending follow-up to child ${childId}: ${err.error}` });
-                            }
-                        };
-                        conn.socket.on("session_message_error", onError);
-
-                        conn.socket.emit("session_message", {
-                            token: conn.token,
-                            targetSessionId: childId,
-                            message: params.response,
-                            deliverAs: "input",
-                        });
+                    const ack = await sendSessionMessageWithAck(conn, {
+                        targetSessionId: childId,
+                        message: params.response,
+                        deliverAs: "input",
                     });
+                    const result = ack.ok
+                        ? { ok: true, text: `Follow-up sent to child ${childId}` }
+                        : { ok: false, text: `Error sending follow-up to child ${childId}: ${ack.errors?.[0]?.error ?? ack.error ?? "delivery failed"}` };
                     if (result.ok) {
                         await finalizeSessionCompleteResponse({
                             triggerId: params.triggerId,
