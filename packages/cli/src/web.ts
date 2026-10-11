@@ -581,9 +581,9 @@ export function writeComposeSecure(path: string, content: string): "created" | "
     return existing === null ? "created" : "updated";
 }
 
-export function saveWebConfig(config: WebConfig): void {
+export function saveWebConfig(config: WebConfig, webDir: string = WEB_DIR): void {
     // Holds betterAuthSecret, the VAPID private key, and caddyDnsToken.
-    writeJsonSecure(CONFIG_PATH, config);
+    writeJsonSecure(join(webDir, "config.json"), config);
 }
 
 // ─── Docker helpers ───────────────────────────────────────────────────────────
@@ -993,8 +993,9 @@ export function generateComposeFile(opts: {
         if (v !== undefined) config[key] = v || undefined;
     }
 
-    // Persist any env-driven changes back to config.json
-    saveWebConfig(config);
+    // Persist any env-driven changes back to config.json — in webDir, so a
+    // caller (or test) that injects webDir never touches the real ~/.pizzapi/web.
+    saveWebConfig(config, webDir);
 
     const trustProxyLine = config.trustProxy === true
         ? `      - PIZZAPI_TRUST_PROXY=true\n`
