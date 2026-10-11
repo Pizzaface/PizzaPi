@@ -51,7 +51,6 @@ async function insertRelaySession(opts: {
     id: string;
     isEphemeral: 0 | 1;
     expiresAt: string | null;
-    isPinned?: 0 | 1;
 }): Promise<void> {
     const now = new Date().toISOString();
     await getKysely()
@@ -67,7 +66,6 @@ async function insertRelaySession(opts: {
             endedAt: null,
             isEphemeral: opts.isEphemeral,
             expiresAt: opts.expiresAt,
-            isPinned: opts.isPinned ?? 0,
             runnerId: null,
             runnerName: null,
             sessionName: null,

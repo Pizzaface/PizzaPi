@@ -74,17 +74,14 @@ There are three ways to reposition a panel:
 - **Drag the resize handle** between the panel and the main content area to adjust the panel's height (for top/bottom zones) or the column width (for left/right zones).
 - Panel sizes are remembered per-position. On mobile, panels display as full-screen overlays instead of docked zones.
 
-## Session pinning
+## Session actions
 
-Pin important sessions so they stay accessible even after the agent finishes and the session would normally scroll out of view.
-
-- **Swipe left** on a session card in the sidebar to reveal action buttons, including **Pin**.
-- Pinned sessions float to the top of their project group in the sidebar.
-- Pinned sessions that have ended remain visible in the sidebar (fetched from the server) until you unpin them.
-- The pin state is stored server-side (`PUT /api/sessions/:id/pin` and `DELETE /api/sessions/:id/pin`), so your pins persist across browser tabs and devices.
+- **Swipe left** on a session card to reveal Duplicate (when available) and End.
+- **Right-click** a session on desktop or **long-press** it on touch to open its action menu.
+- The action menu includes Open, Duplicate (when available), Copy session ID, Select, and End.
 
 <Aside type="tip">
-Long-press a session card (500ms) to open the **End Session** confirmation dialog — useful on touch devices where swipe gestures may be awkward.
+Ending a session requires confirmation. Use Select mode to end several sessions at once.
 </Aside>
 
 ## Context window donut

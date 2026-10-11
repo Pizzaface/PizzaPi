@@ -101,7 +101,7 @@ describe("NewSessionWizardDialog", () => {
         }) as unknown as typeof fetch;
         const onSpawn = mock(async () => {});
 
-        const { findByText, findByLabelText, getByText } = render(React.createElement(NewSessionWizardDialog, {
+        const { container, findByText, findByLabelText, getByText } = render(React.createElement(NewSessionWizardDialog, {
             open: true,
             onOpenChange: () => {},
             runners: [RUNNER],
@@ -112,6 +112,9 @@ describe("NewSessionWizardDialog", () => {
         expect(await findByText("Step 2 of 2")).toBeTruthy();
         const modelSelect = await findByLabelText("Model") as HTMLSelectElement;
         await waitFor(() => expect(modelSelect.options.length).toBe(2));
+        expect(modelSelect.className).toContain("w-full min-w-0");
+        expect(container.querySelector('[class*="sm:max-w-lg"]')?.className).toContain("[&>*]:min-w-0");
+        expect((await findByLabelText(/Working directory/)).className).toContain("min-w-0");
 
         fireEvent.change(modelSelect, { target: { value: "openrouter\topenai/gpt-5.5" } });
         fireEvent.click(getByText("Start Session"));

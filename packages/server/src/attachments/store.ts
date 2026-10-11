@@ -183,7 +183,7 @@ export async function getStoredAttachment(attachmentId: string): Promise<StoredA
     const expiresAtMs = record.expiresAtMs ?? Date.parse(record.expiresAt);
     if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
         // For extracted images (uploaderUserId === "system"), check whether this
-        // attachment is referenced by a durable (pinned/non-ephemeral) session
+        // attachment is referenced by a durable non-ephemeral session
         // before deleting.  Without this, a viewer requesting an expired-but-durable
         // attachment races the sweep and permanently removes it on read.
         if (record.uploaderUserId === "system") {
@@ -511,8 +511,8 @@ export async function sweepExpiredAttachments(nowMs: number = Date.now()): Promi
         const expiresAtMs = record.expiresAtMs ?? Date.parse(record.expiresAt);
         if (!Number.isFinite(expiresAtMs) || expiresAtMs > nowMs) continue;
 
-        // If the attachment is referenced by ANY durable (pinned or non-ephemeral)
-        // session that is still alive, renew the TTL instead of deleting.
+        // If the attachment is referenced by ANY durable non-ephemeral session
+        // that is still alive, renew the TTL instead of deleting.
         if (record.uploaderUserId === "system" && hasAnyDurableSessionRef(attachmentId, record.sessionId, durableSessionIds)) {
             const refreshed = nowMs + EXTRACTED_IMAGE_TTL_MS;
             record.expiresAt = new Date(refreshed).toISOString();
@@ -600,7 +600,7 @@ export async function pruneSessionAttachments(prunedSessionIds: string[]): Promi
 }
 
 /**
- * Return the set of session IDs that are pinned or non-ephemeral (and not yet expired).
+ * Return the set of non-ephemeral session IDs that have not yet expired.
  * Used by the sweep to avoid deleting extracted images that are still reachable.
  */
 async function getDurableSessionIds(): Promise<Set<string>> {
@@ -608,18 +608,11 @@ async function getDurableSessionIds(): Promise<Set<string>> {
     const rows = await getKysely()
         .selectFrom("relay_session")
         .select("id")
-        .where((eb) =>
-            eb.or([
-                eb("isPinned", "=", 1),
-                eb.and([
-                    eb("isEphemeral", "=", 0),
-                    eb.or([
-                        eb("expiresAt", "is", null),
-                        eb("expiresAt", ">", nowIso),
-                    ]),
-                ]),
-            ]),
-        )
+        .where("isEphemeral", "=", 0)
+        .where((eb) => eb.or([
+            eb("expiresAt", "is", null),
+            eb("expiresAt", ">", nowIso),
+        ]))
         .execute();
     return new Set(rows.map((r) => r.id));
 }

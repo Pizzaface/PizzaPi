@@ -143,14 +143,11 @@ describe("handleApi — global endpoints", () => {
 // ── Dispatcher: router delegation ───────────────────────────────────────────
 
 describe("handleApi — router delegation", () => {
-    test("sessions pin returns 405 for unsupported methods", async () => {
+    test("removed session pin endpoint is not routed", async () => {
         const url = new URL("http://localhost/api/sessions/s-123/pin");
-        const req = new Request(url, { method: "POST" });
+        const req = new Request(url, { method: "PUT" });
 
-        const res = await handleApi(req, url);
-        expect(res).toBeTruthy();
-        expect(res!.status).toBe(405);
-        expect(res!.headers.get("Allow")).toBe("PUT, DELETE");
+        expect(await handleApi(req, url)).toBeUndefined();
     });
 
     test("push vapid-public-key is accessible without auth", async () => {

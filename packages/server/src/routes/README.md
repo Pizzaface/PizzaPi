@@ -13,7 +13,7 @@ routes/
 ├── utils.ts          Shared utilities (parseJsonArray, runner pickers, ephemeral API keys)
 ├── auth.ts           POST /api/register, GET /api/signup-status
 ├── runners.ts        /api/runners/* — spawn, restart, stop, terminal, skills, files, git
-├── sessions.ts       /api/sessions/* — list, pin/unpin
+├── sessions.ts       /api/sessions/* — list persisted and live sessions
 ├── attachments.ts    Upload (POST /api/sessions/:id/attachments), download (GET /api/attachments/:id)
 ├── push.ts           /api/push/* — VAPID key, subscribe, unsubscribe, events
 ├── settings.ts       /api/settings/hidden-models — GET & PUT
@@ -73,9 +73,6 @@ type RouteHandler = (req: Request, url: URL) => Promise<Response | undefined>;
 | POST | `/api/runners/:id/git-status` | runners.ts | Session |
 | POST | `/api/runners/:id/git-diff` | runners.ts | Session |
 | GET | `/api/sessions` | sessions.ts | Session |
-| GET | `/api/sessions/pinned` | sessions.ts | Session |
-| PUT | `/api/sessions/:id/pin` | sessions.ts | Session |
-| DELETE | `/api/sessions/:id/pin` | sessions.ts | Session |
 | POST | `/api/sessions/:id/attachments` | attachments.ts | Session |
 | GET | `/api/attachments/:id` | attachments.ts | Session or API key |
 | GET | `/api/push/vapid-public-key` | push.ts | No |

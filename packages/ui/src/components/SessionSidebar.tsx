@@ -15,7 +15,7 @@ import { useHubSocket } from "@/lib/hub-socket-context";
 import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, Code2, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy, Moon } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, Code2, CheckSquare, Square, CheckCheck, Trash2, ChevronDown, ChevronRight, MessageSquare, Copy, Moon } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { countSessionStatuses, getSessionVisualState, type SessionStatusCounts } from "@/lib/session-visual-state";
@@ -38,41 +38,9 @@ interface HubSession {
     model?: { provider: string; id: string; name?: string } | null;
     runnerId?: string | null;
     runnerName?: string | null;
-    isPinned?: boolean;
     parentSessionId?: string | null;
     /** Worker exited idle; the session wakes on the next message. */
     suspended?: boolean;
-}
-
-interface PinnedSession {
-    sessionId: string;
-    cwd: string;
-    shareUrl: string;
-    startedAt: string;
-    lastActiveAt: string;
-    endedAt: string | null;
-    isEphemeral: boolean;
-    expiresAt: string | null;
-    isPinned: boolean;
-    runnerId: string | null;
-    runnerName: string | null;
-    sessionName?: string | null;
-}
-
-function isPinnedSession(value: unknown): value is PinnedSession {
-    if (!value || typeof value !== "object") return false;
-    const v = value as Record<string, unknown>;
-    return (
-        typeof v.sessionId === "string" &&
-        typeof v.cwd === "string" &&
-        typeof v.shareUrl === "string" &&
-        typeof v.startedAt === "string" &&
-        typeof v.lastActiveAt === "string" &&
-        (typeof v.endedAt === "string" || v.endedAt === null) &&
-        typeof v.isEphemeral === "boolean" &&
-        (typeof v.expiresAt === "string" || v.expiresAt === null) &&
-        v.isPinned === true
-    );
 }
 
 export type { HubSession };
@@ -316,9 +284,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [confirmEndSessionId, setConfirmEndSessionId] = React.useState<string | null>(null);
     const [revealedSessionId, setRevealedSessionId] = React.useState<string | null>(null);
     const [swipeOffsets, setSwipeOffsets] = React.useState<Map<string, number>>(new Map());
-    // Reveal widths: 3 buttons (Duplicate + Pin + End) vs 2 buttons (Pin + End when no runner)
-    const REVEAL_WIDTH = 198; // px — Duplicate + Pin + End (session has a runner)
-    const REVEAL_WIDTH_NO_RUNNER = 132; // px — Pin + End only (session has no runner)
+    // Reveal widths: Duplicate + End when the session has a runner, End only otherwise
+    const REVEAL_WIDTH = 132;
+    const REVEAL_WIDTH_NO_RUNNER = 66;
 
     // If we enter multi-select mode, ensure no swipe-reveal UI remains open.
     React.useEffect(() => {
@@ -343,6 +311,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const swipeRef = React.useRef<{
         sessionId: string;
         pointerId: number;
+        pointerType: string;
         startX: number;
         startY: number;
         curX: number;
@@ -351,24 +320,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         didSwipe: boolean; // true if any significant horizontal movement happened
         revealWidth: number; // effective snap-to width for this session's reveal area
     } | null>(null);
-    // Flag to suppress the click that fires after a swipe/long-press pointerUp
+    // Flag to suppress the click that fires after a swipe pointerUp
     const suppressClickRef = React.useRef(false);
-    // Long-press timer: fires the confirmation dialog if the user holds for 500ms
-    const longPressTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    const clearLongPress = React.useCallback(() => {
-        if (longPressTimerRef.current) {
-            clearTimeout(longPressTimerRef.current);
-            longPressTimerRef.current = null;
-        }
-    }, []);
-
-    // Cleanup long-press timer on unmount
-    React.useEffect(() => () => { clearLongPress(); }, [clearLongPress]);
 
     const handleSessionPointerDown = React.useCallback((e: React.PointerEvent, sessionId: string, revealWidth: number = REVEAL_WIDTH) => {
         // Only track primary button (left-click / single touch)
         if (e.button !== 0) return;
+        suppressClickRef.current = false;
         // Prevent the event from bubbling to the App-level sidebar swipe-to-close
         // handler, which would steal pointer capture and interpret any horizontal
         // movement on a session card as a "close sidebar" gesture.
@@ -383,6 +341,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         swipeRef.current = {
             sessionId,
             pointerId: e.pointerId,
+            pointerType: e.pointerType,
             startX: e.clientX,
             startY: e.clientY,
             curX: e.clientX,
@@ -394,20 +353,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         // Capture the pointer so we get move/up even if the cursor leaves the element
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 
-        // Start long-press timer — show confirmation after 500ms of holding
-        clearLongPress();
-        longPressTimerRef.current = setTimeout(() => {
-            longPressTimerRef.current = null;
-            // Only fire if the user hasn't started swiping or scrolling
-            const s = swipeRef.current;
-            if (s && !s.locked && !s.isVertical && !s.didSwipe) {
-                s.didSwipe = true; // prevent the click from firing
-                suppressClickRef.current = true;
-                requestAnimationFrame(() => { suppressClickRef.current = false; });
-                setConfirmEndSessionId(sessionId);
-            }
-        }, 500);
-    }, [clearLongPress]);
+    }, []);
 
     const handleSessionPointerMove = React.useCallback((e: React.PointerEvent) => {
         const s = swipeRef.current;
@@ -415,11 +361,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         s.curX = e.clientX;
         const dx = e.clientX - s.startX;
         const dy = e.clientY - s.startY;
-
-        // Any significant movement cancels the long-press timer
-        if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-            clearLongPress();
-        }
 
         // Determine direction lock on first significant movement
         if (!s.locked && !s.isVertical) {
@@ -452,10 +393,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             next.set(s.sessionId, clamped);
             return next;
         });
-    }, [revealedSessionId, clearLongPress]);
+    }, [revealedSessionId]);
 
     const handleSessionPointerUp = React.useCallback((e: React.PointerEvent) => {
-        clearLongPress();
         const s = swipeRef.current;
         if (!s || e.pointerId !== s.pointerId) return;
         const didSwipe = s.didSwipe;
@@ -487,7 +427,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             setSwipeOffsets(() => new Map());
             if (wasRevealed) setRevealedSessionId(null);
         }
-    }, [revealedSessionId, swipeOffsets, clearLongPress]);
+    }, [revealedSessionId, swipeOffsets]);
 
     // Close revealed item when clicking elsewhere
     const handleCloseRevealed = React.useCallback(() => {
@@ -541,97 +481,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     // second /hub WebSocket connection per browser tab.
     const hubSocket = useHubSocket();
 
-    // ── Pinned sessions ──────────────────────────────────────────────────
-    const [, setPinnedSessions] = React.useState<PinnedSession[]>([]);
-    const [pinnedSessionIds, setPinnedSessionIds] = React.useState<Set<string>>(new Set());
-    const [pinPendingSessionIds, setPinPendingSessionIds] = React.useState<Set<string>>(new Set());
-    const [pinError, setPinError] = React.useState<string | null>(null);
     const [expandedNodeIds, setExpandedNodeIds] = React.useState<Set<string>>(new Set());
     const [rovingSessionId, setRovingSessionId] = React.useState<string | null>(activeSessionId);
-    const pinPendingRef = React.useRef<Set<string>>(new Set());
-
-    // Fetch pinned sessions from the API
-    const fetchPinnedSessions = React.useCallback(async () => {
-        try {
-            const res = await fetch("/api/sessions/pinned", { credentials: "include" });
-            if (!res.ok) return;
-            const body = await res.json();
-            const pinned: PinnedSession[] = Array.isArray(body?.pinnedSessions)
-                ? body.pinnedSessions.filter(isPinnedSession)
-                : [];
-            setPinnedSessions(pinned);
-            setPinnedSessionIds(new Set(pinned.map((s) => s.sessionId)));
-        } catch {
-            // best-effort
-        }
-    }, []);
-
-    React.useEffect(() => {
-        fetchPinnedSessions();
-    }, [fetchPinnedSessions]);
-
-    const setPinPending = React.useCallback((sessionId: string, pending: boolean) => {
-        const next = new Set(pinPendingRef.current);
-        if (pending) next.add(sessionId);
-        else next.delete(sessionId);
-        pinPendingRef.current = next;
-        setPinPendingSessionIds(next);
-    }, []);
-
-    const togglePinSession = React.useCallback(async (sessionId: string, currentlyPinned: boolean) => {
-        if (pinPendingRef.current.has(sessionId)) return;
-
-        setPinError(null);
-        setPinPending(sessionId, true);
-
-        const method = currentlyPinned ? "DELETE" : "PUT";
-
-        // Optimistic update — keep both pinnedSessionIds (Set) and
-        // pinnedSessions (array) in sync so ended-pinned items disappear
-        // immediately when unpinned.
-        setPinnedSessionIds((prev) => {
-            const next = new Set(prev);
-            if (currentlyPinned) next.delete(sessionId);
-            else next.add(sessionId);
-            return next;
-        });
-
-        // Snapshot the removed entry so we can restore it on failure
-        let removedPinnedEntry: PinnedSession | undefined;
-        if (currentlyPinned) {
-            setPinnedSessions((prev) => {
-                removedPinnedEntry = prev.find((s) => s.sessionId === sessionId);
-                return prev.filter((s) => s.sessionId !== sessionId);
-            });
-        }
-
-        try {
-            const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, {
-                method,
-                credentials: "include",
-            });
-
-            if (!res.ok) {
-                throw new Error(`HTTP ${res.status}`);
-            }
-
-            await fetchPinnedSessions();
-        } catch {
-            // Revert optimistic update
-            setPinnedSessionIds((prev) => {
-                const next = new Set(prev);
-                if (currentlyPinned) next.add(sessionId);
-                else next.delete(sessionId);
-                return next;
-            });
-            if (removedPinnedEntry) {
-                setPinnedSessions((prev) => [...prev, removedPinnedEntry!]);
-            }
-            setPinError("Failed to update pinned session. Please try again.");
-        } finally {
-            setPinPending(sessionId, false);
-        }
-    }, [fetchPinnedSessions, setPinPending]);
 
     React.useEffect(() => {
         onRelayStatusChange?.(dotState);
@@ -817,22 +668,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         : s,
                 ),
             );
-
-            // Also refresh pinned entries so late runner-link updates are not
-            // lost when the session ends and drops out of liveSessions.
-            if (runnerId !== undefined || runnerName !== undefined) {
-                setPinnedSessions((prev) =>
-                    prev.map((p) =>
-                        p.sessionId === sessionId
-                            ? {
-                                  ...p,
-                                  runnerId: runnerId !== undefined ? runnerId : p.runnerId,
-                                  runnerName: runnerName !== undefined ? runnerName : p.runnerName,
-                              }
-                            : p,
-                    ),
-                );
-            }
         };
 
         hubSocket.on("connect", handleConnect);
@@ -917,12 +752,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             tsBySession.set(s.sessionId, Date.parse(s.lastHeartbeatAt ?? s.startedAt));
         }
 
-        // Step 2: sort sessions within each runner — pinned first, then by most recently active/started.
+        // Step 2: sort sessions within each runner by most recently active/started.
         for (const entry of runnerMap.values()) {
             entry.sessions.sort((a, b) => {
-                const aPinned = pinnedSessionIds.has(a.sessionId) ? 1 : 0;
-                const bPinned = pinnedSessionIds.has(b.sessionId) ? 1 : 0;
-                if (bPinned !== aPinned) return bPinned - aPinned;
                 const aT = tsBySession.get(a.sessionId) ?? 0;
                 const bT = tsBySession.get(b.sessionId) ?? 0;
                 return (Number.isFinite(bT) ? bT : 0) - (Number.isFinite(aT) ? aT : 0);
@@ -954,13 +786,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 sessions: cwdSessions,
             }));
 
-            // Sort projects — groups containing a pinned session float first,
-            // then by most recently active session within the group.
+            // Sort projects by most recently active session within the group.
             projects.sort((a, b) => {
-                const hasPinned = (grp: ProjectGroup) =>
-                    grp.sessions.some((s) => pinnedSessionIds.has(s.sessionId)) ? 1 : 0;
-                const pinDiff = hasPinned(b) - hasPinned(a);
-                if (pinDiff !== 0) return pinDiff;
                 const latestTs = (grp: ProjectGroup) =>
                     Math.max(0, ...grp.sessions
                         .map((s) => tsBySession.get(s.sessionId) ?? 0)
@@ -979,7 +806,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
 
         return result;
-    }, [visibleSessions, pinnedSessionIds]);
+    }, [visibleSessions]);
 
     const selectableSessionIds = React.useMemo(
         () => getSelectableSessionIds(liveGroups, expandedNodeIds),
@@ -1361,11 +1188,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 )}
 
                 {!showRunners && <div className="flex-1 px-2 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
-                    {pinError && (
-                        <p role="alert" aria-live="polite" className="px-2 py-2 text-[0.7rem] text-red-400">
-                            {pinError}
-                        </p>
-                    )}
 
                     {!hasLoaded ? (
                         <SidebarSkeleton />
@@ -1444,8 +1266,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             const timeLabel = isToday(s.startedAt)
                                                 ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
                                                 : formatRelativeDate(s.startedAt);
-                                            const isPinned = pinnedSessionIds.has(s.sessionId);
-                                            const isPinPending = pinPendingSessionIds.has(s.sessionId);
                                             const swipeOffset = swipeOffsets.get(s.sessionId) ?? 0;
                                             const isRevealed = revealedSessionId === s.sessionId;
                                             const hasOffset = swipeOffset !== 0;
@@ -1458,8 +1278,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     className="group relative overflow-hidden rounded-md"
                                                     style={depth > 0 ? { marginLeft: `${getSessionIndent(depth)}px` } : undefined}
                                                 >
-                                                    {/* "Duplicate" + "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
-                                                    {/* Width adapts: 3 buttons when session has a runner, 2 buttons otherwise */}
+                                                    {/* "Duplicate" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
                                                     {!selectMode && (hasOffset || isRevealed) && <div
                                                         className="absolute inset-y-0 right-0 flex items-stretch rounded-r-md overflow-hidden"
                                                         style={{ width: s.runnerId ? REVEAL_WIDTH : REVEAL_WIDTH_NO_RUNNER }}
@@ -1486,29 +1305,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         </button>
                                                         )}
                                                         <button
-                                                            className={cn(
-                                                                "flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors leading-none",
-                                                                isPinPending ? "opacity-60 cursor-not-allowed" : "active:bg-blue-600",
-                                                            )}
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                if (isPinPending) return;
-                                                                togglePinSession(s.sessionId, isPinned);
-                                                                // Close the revealed state
-                                                                setSwipeOffsets((prev) => {
-                                                                    const next = new Map(prev);
-                                                                    next.delete(s.sessionId);
-                                                                    return next;
-                                                                });
-                                                                setRevealedSessionId(null);
-                                                            }}
-                                                            disabled={isPinPending}
-                                                            aria-label={isPinned ? "Unpin session" : "Pin session"}
-                                                        >
-                                                            {isPinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
-                                                            <span>{isPinPending ? "Saving" : isPinned ? "Unpin" : "Pin"}</span>
-                                                        </button>
-                                                        <button
                                                             className="flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors leading-none"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
@@ -1527,64 +1323,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         </button>
                                                     </div>}
 
-                                                    {/* Discoverable per-row actions — visible on hover/focus on desktop (md+); mobile keeps the swipe-reveal panel above.
-                                                        tabIndex={-1} + pointer-events-none/auto: these buttons sit outside the
-                                                        treeitem's single Tab stop (keyboard access is the context menu or the
-                                                        "p" shortcut) and must be truly non-interactive while invisible — opacity
-                                                        alone still lets a tap land on a hidden destructive "End" button on
-                                                        touch devices with no hover. */}
-                                                    {!selectMode && (
-                                                        <div className="hidden md:flex absolute right-1.5 top-1/2 -translate-y-1/2 z-10 items-center gap-0.5 rounded-md bg-sidebar-accent/95 p-0.5 shadow-sm opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
-                                                            {s.runnerId && onDuplicateSession && (
-                                                                <button
-                                                                    type="button"
-                                                                    tabIndex={-1}
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        onDuplicateSession(s.runnerId!, s.cwd || "");
-                                                                    }}
-                                                                    aria-label="Duplicate session"
-                                                                    title="New session with same runner & directory"
-                                                                    className="flex h-6 w-6 items-center justify-center rounded text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                                                                >
-                                                                    <Copy className="h-3.5 w-3.5" />
-                                                                </button>
-                                                            )}
-                                                            <button
-                                                                type="button"
-                                                                tabIndex={-1}
-                                                                disabled={isPinPending}
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    if (isPinPending) return;
-                                                                    togglePinSession(s.sessionId, isPinned);
-                                                                }}
-                                                                aria-label={isPinned ? "Unpin session" : "Pin session"}
-                                                                title={isPinned ? "Unpin session" : "Pin session"}
-                                                                className="flex h-6 w-6 items-center justify-center rounded text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:opacity-50"
-                                                            >
-                                                                {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
-                                                            </button>
-                                                            {onEndSession && (
-                                                                <button
-                                                                    type="button"
-                                                                    tabIndex={-1}
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        setConfirmEndSessionId(s.sessionId);
-                                                                    }}
-                                                                    aria-label="End session"
-                                                                    title="End session"
-                                                                    className="flex h-6 w-6 items-center justify-center rounded text-sidebar-foreground/70 hover:bg-red-500/20 hover:text-red-400"
-                                                                >
-                                                                    <X className="h-3.5 w-3.5" />
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                    )}
-
                                                     {/* Sliding session card */}
-                                                    <ContextMenu>
+                                                    <ContextMenu onOpenChange={(open) => {
+                                                        // Radix opens this menu for touch/pen long-press. Ignore any synthetic
+                                                        // click some browsers dispatch when the pointer lifts, not keyboard/menu clicks.
+                                                        if (open && swipeRef.current?.pointerType !== "mouse") suppressClickRef.current = true;
+                                                    }}>
                                                     <ContextMenuTrigger asChild disabled={selectMode}>
                                                     <div
                                                         role="treeitem"
@@ -1613,12 +1357,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         }}
                                                         title={selectMode
                                                             ? `Toggle selection for ${s.sessionName?.trim() || s.sessionId.slice(0, 8)}`
-                                                            : `View session ${s.sessionId} (press P to ${isPinned ? "unpin" : "pin"})`}
+                                                            : `View session ${s.sessionId}`}
                                                         aria-label={(() => {
                                                             const nm = s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}`;
                                                             if (selectMode) return `${isChecked ? "Deselect" : "Select"} ${nm}`;
                                                             const st = s.isActive ? "active" : s.suspended ? "suspended" : "idle";
-                                                            return `${nm}, ${st}${isPinned ? ", pinned" : ""}`;
+                                                            return `${nm}, ${st}`;
                                                         })()}
                                                         data-session-row=""
                                                         data-session-depth={depth}
@@ -1690,11 +1434,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                 }
                                                                 return;
                                                             }
-                                                            if (selectMode) return;
-                                                            if (e.key.toLowerCase() !== "p") return;
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                            togglePinSession(s.sessionId, isPinned);
                                                         }}
                                                         onPointerDown={selectMode ? undefined : (e) => handleSessionPointerDown(e, s.sessionId, s.runnerId ? REVEAL_WIDTH : REVEAL_WIDTH_NO_RUNNER)}
                                                         onPointerMove={selectMode ? undefined : handleSessionPointerMove}
@@ -1855,9 +1594,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     <ContextMenuContent>
                                                         <ContextMenuItem onSelect={() => onOpenSession(s.sessionId)}>
                                                             <MessageSquare /> Open
-                                                        </ContextMenuItem>
-                                                        <ContextMenuItem disabled={isPinPending} onSelect={() => togglePinSession(s.sessionId, isPinned)}>
-                                                            {isPinned ? <PinOff /> : <Pin />} {isPinned ? "Unpin" : "Pin"}
                                                         </ContextMenuItem>
                                                         {s.runnerId && onDuplicateSession && (
                                                             <ContextMenuItem onSelect={() => onDuplicateSession(s.runnerId!, s.cwd || "")}>

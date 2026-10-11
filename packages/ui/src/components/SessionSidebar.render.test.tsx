@@ -77,20 +77,10 @@ test("session rows expose actions and valid tree/keyboard semantics", async () =
     expect(rows.filter((row) => row.tabIndex === 0)).toHaveLength(1);
     expect(rows.map((row) => row.getAttribute("aria-selected"))).toEqual(["false", "true"]);
 
-    // Each row contributes exactly one Tab stop — the discoverable hover
-    // actions (Duplicate/Pin/End) must not add any of their own.
-    const duplicateButtons = elementsWithAttr(container, "button", "aria-label", "Duplicate session");
-    const pinButtons = elementsWithAttr(container, "button", "aria-label", "Pin session");
-    const endButtons = elementsWithAttr(container, "button", "aria-label", "End session");
-    expect(duplicateButtons.length).toBe(2);
-    expect(pinButtons.length).toBe(2);
-    expect(endButtons.length).toBe(2);
-    for (const btn of [...duplicateButtons, ...pinButtons, ...endButtons]) {
-        expect(btn.tabIndex).toBe(-1);
-        // Invisible-but-clickable is the bug: opacity alone still lets a tap
-        // land on a hidden destructive button on touch devices with no hover.
-        expect(btn.closest(".pointer-events-none")).not.toBeNull();
-    }
+    // Row actions live in the context menu / swipe reveal only — nothing
+    // per-row is rendered at rest (no hidden hover buttons to mis-tap).
+    expect(elementsWithAttr(container, "button", "aria-label", "Duplicate session")).toHaveLength(0);
+    expect(elementsWithAttr(container, "button", "aria-label", "End session")).toHaveLength(0);
 
     rows[0].focus();
     fireEvent.keyDown(rows[0], { key: "ArrowDown" });

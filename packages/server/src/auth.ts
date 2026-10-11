@@ -93,7 +93,6 @@ export interface RelaySessionTable {
     endedAt: string | null;
     isEphemeral: number;
     expiresAt: string | null;
-    isPinned: number;
     runnerId: string | null;
     runnerName: string | null;
     sessionName: string | null;

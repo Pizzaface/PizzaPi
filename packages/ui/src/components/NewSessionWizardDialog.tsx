@@ -335,7 +335,7 @@ export function NewSessionWizardDialog({
 
     return (
         <Dialog open={open} onOpenChange={(o) => { if (!spawning) onOpenChange(o); }}>
-            <DialogContent className="sm:max-w-lg">
+            <DialogContent className="sm:max-w-lg [&>*]:min-w-0">
                 <DialogHeader>
                     <div className="flex items-center justify-between gap-3">
                         <DialogTitle>New session</DialogTitle>
@@ -431,7 +431,7 @@ export function NewSessionWizardDialog({
                                 value={selectedModelKey}
                                 onChange={(e) => setSelectedModelKey(e.target.value)}
                                 disabled={spawning || modelsLoading || runnerModels.length === 0}
-                                className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                                className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                             >
                                 <option value="">Automatic (runner default)</option>
                                 {runnerModels.map((model) => (
@@ -459,7 +459,7 @@ export function NewSessionWizardDialog({
                                     onChange={(e) => setCwd(e.target.value)}
                                     onKeyDown={(e) => { if (e.key === "Enter") void handleSpawn(); }}
                                     placeholder="/path/to/project"
-                                    className="font-mono text-sm flex-1"
+                                    className="font-mono text-sm min-w-0 flex-1"
                                     disabled={spawning}
                                     autoFocus
                                 />
