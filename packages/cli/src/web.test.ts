@@ -149,6 +149,9 @@ describe("web.ts compose template", () => {
         const composed = readFileSync(composePath, "utf-8");
 
         expect(composePath).toBe(join(webDir, "compose.yml"));
+        // Regression: config used to be persisted to the real ~/.pizzapi/web
+        // regardless of webDir, clobbering the live relay's secrets with these fixtures.
+        expect(JSON.parse(readFileSync(join(webDir, "config.json"), "utf-8")).betterAuthSecret).toBe("Secret123");
         expect(composed).toContain("test: [\"CMD-SHELL\", \"wget -q --tries=1 http://localhost:80/v1/health");
         expect(composed).toContain("grep -Eo '\\\"healthy\\\"[[:space:]]*:[[:space:]]*true'");
         expect(composed).not.toContain("test: [\"CMD\", \"ntfy\", \"healthy\"]");
