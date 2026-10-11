@@ -47,6 +47,7 @@ import {
     applySnapshotPatchToPendingState,
     canFinalizeChunkedSnapshot,
     enqueueSessionEvent,
+    isSessionResetting,
     getChunkedSnapshotLimits,
     CHUNK_STREAM_STALE_MS,
 } from "./relay-state.js";
@@ -244,8 +245,20 @@ export function registerEventHandler(socket: RelaySocket): void {
             // after the check while this event is still mutating shared state.
             const lockOwner = randomUUID();
             try {
-                await acquireSessionOwnershipLock(sessionId, lockOwner);
+                // A reconnect registration holds this lock while it drains the
+                // queue this handler is running in. Stop waiting as soon as the
+                // reset starts: this event belongs to the replaced generation
+                // (its token is about to be superseded), and waiting out the
+                // timeout would stall the registration for the full 5s.
+                await acquireSessionOwnershipLock(sessionId, lockOwner, undefined, undefined, () =>
+                    isSessionResetting(sessionId),
+                );
             } catch (err) {
+                if (err instanceof Error && err.name === "SessionOwnershipLockAbortedError") {
+                    log.info(`Dropping event for ${sessionId}: session was replaced by a reconnect`);
+                    if (wantsChunkAck) ackOnce({ ok: false, error: "stale_owner" });
+                    return;
+                }
                 log.warn(`Could not acquire ownership lock for event on ${sessionId}; dropping event:`, err);
                 if (wantsChunkAck) ackOnce({ ok: false, error: "lock_failed" });
                 return;

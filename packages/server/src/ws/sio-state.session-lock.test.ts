@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { closeStateRedis, initStateRedis, acquireSessionOwnershipLock, releaseSessionOwnershipLock } from "./sio-state.js";
+import {
+    closeStateRedis,
+    initStateRedis,
+    acquireSessionOwnershipLock,
+    releaseSessionOwnershipLock,
+    SessionOwnershipLockAbortedError,
+} from "./sio-state.js";
 
 const owners = new Map<string, string>();
 const evalScripts: string[] = [];
@@ -61,6 +67,20 @@ describe("session ownership lock", () => {
         await expect(acquireSessionOwnershipLock("session-1", "waiter", 20)).rejects.toThrow(
             "Timed out acquiring session ownership lock",
         );
+    });
+
+    it("stops waiting as soon as shouldAbort returns true", async () => {
+        await initStateRedis(redis);
+        owners.set("pizzapi:sio:session-lock:session-1", "registration");
+        let abort = false;
+        setTimeout(() => (abort = true), 30);
+
+        const started = performance.now();
+        await expect(
+            acquireSessionOwnershipLock("session-1", "event", 5_000, undefined, () => abort),
+        ).rejects.toBeInstanceOf(SessionOwnershipLockAbortedError);
+        expect(performance.now() - started).toBeLessThan(1_000);
+        expect(owners.get("pizzapi:sio:session-lock:session-1")).toBe("registration");
     });
 
     it("renews the lease while a long operation holds the lock", async () => {

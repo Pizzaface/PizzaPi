@@ -120,17 +120,32 @@ function sessionOwnershipLockKey(sessionId: string): string {
     return `${KEY_PREFIX}:session-lock:${sessionId}`;
 }
 
-/** Serialize registration and destructive teardown for one session ID. */
+/** Thrown when a waiter's `shouldAbort` check fires before the lock is acquired. */
+export class SessionOwnershipLockAbortedError extends Error {
+    constructor(sessionId: string) {
+        super(`Aborted waiting for session ownership lock for ${sessionId}`);
+        this.name = "SessionOwnershipLockAbortedError";
+    }
+}
+
+/**
+ * Serialize registration and destructive teardown for one session ID.
+ *
+ * `shouldAbort` is polled before each attempt; when it returns true the wait
+ * ends with SessionOwnershipLockAbortedError instead of running out the timeout.
+ */
 export async function acquireSessionOwnershipLock(
     sessionId: string,
     owner: string,
     acquireTimeoutMs = SESSION_OWNERSHIP_LOCK_ACQUIRE_TIMEOUT_MS,
     leaseMs = SESSION_OWNERSHIP_LOCK_TTL_MS,
+    shouldAbort?: () => boolean,
 ): Promise<void> {
     const r = requireRedis();
     const key = sessionOwnershipLockKey(sessionId);
     const deadline = Date.now() + acquireTimeoutMs;
     for (;;) {
+        if (shouldAbort?.()) throw new SessionOwnershipLockAbortedError(sessionId);
         const acquired = await r.set(key, owner, { NX: true, PX: leaseMs });
         if (acquired === "OK") {
             const renewalKey = `${sessionId}:${owner}`;

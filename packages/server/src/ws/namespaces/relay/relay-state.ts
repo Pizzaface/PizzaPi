@@ -217,6 +217,15 @@ export const sessionEventQueues = new Map<string, Promise<void>>();
  */
 const resettingSessions = new Set<string>();
 
+/**
+ * True while resetPerSessionRelayState is draining this session's queue. A
+ * handler that was already running when the reset began (e.g. polling for the
+ * ownership lock the registration holds) should check this and bail out.
+ */
+export function isSessionResetting(sessionId: string): boolean {
+    return resettingSessions.has(sessionId);
+}
+
 export function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>): Promise<void> {
     const run = () => (resettingSessions.has(sessionId) ? undefined : fn());
     return chainSessionEvent(sessionId, run);
