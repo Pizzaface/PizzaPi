@@ -18,7 +18,6 @@ export interface HubSession {
   model?: { provider: string; id: string; name?: string } | null;
   runnerId?: string | null;
   runnerName?: string | null;
-  isPinned?: boolean;
   parentSessionId?: string | null;
   suspended?: boolean;
 }

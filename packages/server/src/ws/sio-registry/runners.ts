@@ -447,7 +447,7 @@ export async function linkSessionToRunner(runnerId: string, sessionId: string): 
     // persists so reconnecting TUI agents can restore their runner link.
     await setRunnerAssociation(sessionId, runnerId, runner.name);
 
-    // Also persist the runner link in SQLite so historical/pinned sessions
+    // Also persist the runner link in SQLite so historical sessions
     // retain their runner provenance after the Redis session hash is deleted.
     void updateRelaySessionRunner(sessionId, runnerId, runner.name).catch((error) => {
         log.error("Failed to persist runner link to SQLite:", error);

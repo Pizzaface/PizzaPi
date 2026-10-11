@@ -121,7 +121,6 @@ const TEST_USER = "pagination-test-user";
 async function insertPaginationSession(opts: {
     sessionId: string;
     lastActiveAt: string;
-    isPinned?: number;
     isEphemeral?: boolean;
     expiresAt?: string | null;
 }) {
@@ -138,7 +137,6 @@ async function insertPaginationSession(opts: {
             endedAt: null,
             isEphemeral: opts.isEphemeral === true ? 1 : 0,
             expiresAt: opts.expiresAt ?? null,
-            isPinned: opts.isPinned ?? 0,
             runnerId: null,
             runnerName: null,
         })
@@ -199,28 +197,8 @@ describe("listPersistedRelaySessionsForUser — cursor pagination", () => {
         expect(page2.nextCursor).not.toBeNull();
 
         const page3 = await store.listPersistedRelaySessionsForUser(TEST_USER, 2, page2.nextCursor!);
-        // Only s5 left (non-pinned)
-        const nonPinned = page3.sessions.filter((s: any) => !s.isPinned);
-        expect(nonPinned.map((s: any) => s.sessionId)).toEqual(["s5"]);
+        expect(page3.sessions.map((s: any) => s.sessionId)).toEqual(["s5"]);
         expect(page3.nextCursor).toBeNull();
-    });
-
-    it("pinned sessions are always included regardless of cursor", async () => {
-        // Pinned session has an old lastActiveAt that would be before the cursor
-        await insertPaginationSession({ sessionId: "pinned1", lastActiveAt: "2024-01-01T00:00:00.000Z", isPinned: 1 });
-        await insertPaginationSession({ sessionId: "s1", lastActiveAt: "2025-01-03T00:00:00.000Z" });
-        await insertPaginationSession({ sessionId: "s2", lastActiveAt: "2025-01-02T00:00:00.000Z" });
-        await insertPaginationSession({ sessionId: "s3", lastActiveAt: "2025-01-01T00:00:00.000Z" });
-
-        // Use a cursor that would exclude the pinned session by date
-        const result = await store.listPersistedRelaySessionsForUser(TEST_USER, 10, "2025-01-02T00:00:00.000Z");
-        const ids = result.sessions.map((s: any) => s.sessionId);
-        // Pinned session must still be present
-        expect(ids).toContain("pinned1");
-        // s1 should NOT be present (lastActiveAt >= cursor)
-        expect(ids).not.toContain("s1");
-        // s3 should be present (lastActiveAt < cursor)
-        expect(ids).toContain("s3");
     });
 
     it("hasMore is false when exactly limit rows exist", async () => {

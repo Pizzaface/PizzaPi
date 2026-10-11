@@ -833,48 +833,6 @@ List all sessions for the authenticated user, including both live (in-memory) an
 
 ---
 
-### `GET /api/sessions/pinned`
-
-List pinned sessions for the authenticated user.
-
-**Auth:** Session cookie.
-
-**Response:**
-
-```json
-{ "pinnedSessions": [{ "sessionId": "session_x1y2z3", "isPinned": true }] }
-```
-
----
-
-### `PUT /api/sessions/{sessionId}/pin`
-
-Pin a session so it persists in the session list.
-
-**Auth:** Session cookie.
-
-**Response:**
-
-```json
-{ "ok": true, "isPinned": true }
-```
-
----
-
-### `DELETE /api/sessions/{sessionId}/pin`
-
-Unpin a session.
-
-**Auth:** Session cookie.
-
-**Response:**
-
-```json
-{ "ok": true, "isPinned": false }
-```
-
----
-
 ### `POST /api/sessions/{sessionId}/attachments`
 
 Upload file attachments to a session (e.g. for the agent to process). Accepts one or more files.

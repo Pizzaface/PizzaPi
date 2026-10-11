@@ -40,9 +40,6 @@ mock.module("../ws/sio-registry.js", () => ({
 
 mock.module("../sessions/store.js", () => ({
     listPersistedRelaySessionsForUser: mockListPersistedRelaySessionsForUser,
-    listPinnedRelaySessionsForUser: mock(async () => []),
-    pinRelaySession: mock(async () => {}),
-    unpinRelaySession: mock(async () => {}),
 }));
 
 // ── clampLimit tests ──────────────────────────────────────────────────────────

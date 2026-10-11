@@ -14,7 +14,6 @@ export interface HubSessionPayload {
   model?: { provider: string; id: string; name?: string } | null;
   runnerId?: string | null;
   runnerName?: string | null;
-  isPinned?: boolean;
   parentSessionId?: string | null;
   /** Worker exited idle; the session wakes on the next message. */
   suspended?: boolean;
