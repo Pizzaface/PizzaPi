@@ -29,6 +29,37 @@ function elementsWithAttr(root: Element, tag: string, attr: string, value?: stri
         .filter((el) => el.hasAttribute(attr) && (value === undefined || el.getAttribute(attr) === value)) as HTMLElement[];
 }
 
+test("mode switcher shows lifecycle counts scoped to Code and Work sessions", async () => {
+    const listeners = new Map<string, Set<(data: unknown) => void>>();
+    const socket = {
+        connected: false,
+        on: (event: string, cb: (data: unknown) => void) => {
+            if (!listeners.has(event)) listeners.set(event, new Set());
+            listeners.get(event)!.add(cb);
+        },
+        off: (event: string, cb: (data: unknown) => void) => listeners.get(event)?.delete(cb),
+    };
+    const { container } = render(
+        <HubSocketContext.Provider value={socket as never}>
+            <SessionSidebar onOpenSession={() => {}} onNewSession={() => {}}
+                onClearSelection={() => {}} onShowRunners={() => {}} activeSessionId={null}
+                sessionModes={[{ id: "work", label: "Work", workspace: "/work" }]}
+                sessionModesRunnerId="runner"
+                sessionsAwaitingInput={new Set(["work-waiting"])} />
+        </HubSocketContext.Provider>,
+    );
+    await act(async () => {
+        for (const listener of listeners.get("sessions") ?? []) listener({ sessions: [
+            { sessionId: "code-active", shareUrl: "", cwd: "/code", startedAt: "", runnerId: "runner", isActive: true },
+            { sessionId: "work-waiting", shareUrl: "", cwd: "/work", startedAt: "", runnerId: "runner", isActive: true },
+            { sessionId: "work-suspended", shareUrl: "", cwd: "/work/task", startedAt: "", runnerId: "runner", suspended: true },
+            { sessionId: "work-completed", shareUrl: "", cwd: "/work/task", startedAt: "", runnerId: "runner", isActive: false },
+        ] });
+    });
+    expect(elementsWithAttr(container, "span", "aria-label", "1 active · 0 waiting · 0 completed · 0 suspended")).toHaveLength(1);
+    expect(elementsWithAttr(container, "span", "aria-label", "0 active · 1 waiting · 1 completed · 1 suspended")).toHaveLength(1);
+});
+
 test("session rows expose actions and valid tree/keyboard semantics", async () => {
     const listeners = new Map<string, Set<(data: unknown) => void>>();
     const socket = {

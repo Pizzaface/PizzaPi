@@ -32,6 +32,29 @@ export interface SessionStatusCounts {
   completed: number;
 }
 
+export interface ModeSessionStatusCounts {
+  active: number;
+  waiting: number;
+  completed: number;
+  suspended: number;
+}
+
+/** Count listed sessions once; idle non-suspended sessions are treated as completed. */
+export function countModeSessionStatuses(
+  sessions: ReadonlyArray<{ sessionId: string; isActive?: boolean; suspended?: boolean }>,
+  awaiting: ReadonlySet<string> | undefined,
+  compacting: ReadonlySet<string> | undefined,
+): ModeSessionStatusCounts {
+  const counts: ModeSessionStatusCounts = { active: 0, waiting: 0, completed: 0, suspended: 0 };
+  for (const session of sessions) {
+    if (awaiting?.has(session.sessionId)) counts.waiting++;
+    else if (session.isActive || compacting?.has(session.sessionId)) counts.active++;
+    else if (session.suspended) counts.suspended++;
+    else counts.completed++;
+  }
+  return counts;
+}
+
 /** Count sessions by status for group chips. Awaiting > working > completed(unread); selection is ignored. */
 export function countSessionStatuses(
   sessions: ReadonlyArray<{ sessionId: string; isActive?: boolean }>,

@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "bun:test";
 import { filterSessionsByMode, getSelectableSessionIds } from "./SessionSidebar";
+import { countModeSessionStatuses } from "../lib/session-visual-state";
 import type { ServiceModeDef } from "@pizzapi/protocol";
 
 describe("sidebar bulk selection", () => {
@@ -16,6 +17,20 @@ describe("sidebar bulk selection", () => {
 
         expect(getSelectableSessionIds(groups, new Set())).toEqual(["visible-root"]);
         expect(getSelectableSessionIds(groups, new Set(["visible-root"]))).toEqual(["visible-root", "hidden-child"]);
+    });
+});
+
+describe("mode session status counts", () => {
+    it("counts each listed session once with waiting, active, suspended, then completed priority", () => {
+        const sessions = [
+            { sessionId: "waiting-active", isActive: true },
+            { sessionId: "active", isActive: true },
+            { sessionId: "suspended", suspended: true },
+            { sessionId: "completed", isActive: false },
+        ];
+        expect(countModeSessionStatuses(sessions, new Set(["waiting-active"]), new Set())).toEqual({
+            active: 1, waiting: 1, completed: 1, suspended: 1,
+        });
     });
 });
 

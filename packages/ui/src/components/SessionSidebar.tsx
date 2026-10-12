@@ -18,7 +18,7 @@ import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, Code2, CheckSquare, Square, CheckCheck, Trash2, ChevronDown, ChevronRight, MessageSquare, Copy, Moon } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
-import { countSessionStatuses, getSessionVisualState, type SessionStatusCounts } from "@/lib/session-visual-state";
+import { countModeSessionStatuses, countSessionStatuses, getSessionVisualState, type ModeSessionStatusCounts, type SessionStatusCounts } from "@/lib/session-visual-state";
 import { parseHubSessionsPayload } from "@/lib/hub-sessions";
 import { cwdInWorkspace, type ServiceModeDef, type ServicePanelInfo } from "@pizzapi/protocol";
 
@@ -183,6 +183,25 @@ function LiveDot({ state }: { state: DotState }) {
 import { Skeleton } from "@/components/ui/skeleton";
 
 /** Small segmented chip: awaiting input / working / completed — segments render only when > 0. */
+function ModeStatusCount({ counts }: { counts: ModeSessionStatusCounts }) {
+    const segments = [
+        { key: "active", label: "active", short: "A", cls: "text-sky-500" },
+        { key: "waiting", label: "waiting", short: "W", cls: "text-amber-500" },
+        { key: "completed", label: "completed", short: "C", cls: "text-green-500" },
+        { key: "suspended", label: "suspended", short: "S", cls: "text-muted-foreground" },
+    ] as const;
+    const title = segments.map((segment) => `${counts[segment.key]} ${segment.label}`).join(" · ");
+    return (
+        <span className="flex items-center gap-1 font-mono text-[0.55rem] tabular-nums" title={title} aria-label={title}>
+            {segments.map((segment) => (
+                <span key={segment.key} className={cn("flex items-center gap-0.5", segment.cls)}>
+                    {segment.short}{counts[segment.key]}
+                </span>
+            ))}
+        </span>
+    );
+}
+
 function StatusCountChip({ counts }: { counts: SessionStatusCounts }) {
     const segments = [
         { n: counts.awaiting, label: "awaiting input", cls: "text-amber-500" },
@@ -717,6 +736,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const selectedMode = selectedModeIdProp ?? null;
     const setSelectedMode = React.useCallback((modeId: string | null) => onSelectedModeChange?.(modeId), [onSelectedModeChange]);
     const activeMode = sessionModes.find((mode) => mode.id === selectedMode) ?? null;
+    const modeStatusCounts = (modeId: string | null) => countModeSessionStatuses(
+        filterSessionsByMode(liveSessions, modeId, sessionModes, sessionModesRunnerId),
+        sessionsAwaitingInput,
+        sessionsCompacting,
+    );
     React.useEffect(() => {
         if (selectedMode && !sessionModes.some((mode) => mode.id === selectedMode)) onSelectedModeChange?.(null);
     }, [selectedMode, sessionModes, onSelectedModeChange]);
@@ -1085,6 +1109,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             >
                                 <Code2 className="h-3.5 w-3.5" />
                                 Code
+                                <ModeStatusCount counts={modeStatusCounts(null)} />
                             </button>
                             {sessionModes.map((mode) => (
                                 <button
@@ -1100,6 +1125,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                 >
                                     {mode.icon ? <DynamicLucideIcon name={mode.icon} className="h-3.5 w-3.5" /> : <FolderOpen className="h-3.5 w-3.5" />}
                                     {mode.label}
+                                    <ModeStatusCount counts={modeStatusCounts(mode.id)} />
                                 </button>
                             ))}
                         </div>
