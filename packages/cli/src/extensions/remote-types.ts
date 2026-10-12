@@ -177,6 +177,8 @@ export type AuthSource = "oauth" | "auth.json" | "env" | "unknown";
 
 export interface PendingPluginTrust {
     promptId: string;
+    /** "project" = pi project trust for the worker cwd (pluginNames[0] is the path). */
+    kind?: "project";
     pluginNames: string[];
     pluginSummaries: string[];
     respond: (trusted: boolean) => void;

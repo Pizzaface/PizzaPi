@@ -33,7 +33,7 @@ export interface SessionViewerProps {
   /** Pending plan mode prompt — shown as a plan review panel */
   pendingPlan?: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
   /** Plugin trust prompt from the worker — shown as a confirmation dialog */
-  pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
+  pluginTrustPrompt?: { promptId: string; kind?: "project"; pluginNames: string[]; pluginSummaries: string[] } | null;
   /** Respond to the plugin trust prompt */
   onPluginTrustResponse?: (trusted: boolean) => void;
   /** Pending extension approval (gated tool call) — shown as an approval card */

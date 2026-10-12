@@ -890,8 +890,10 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             rctx.pendingPluginTrust.respond(false);
         }
 
+        const kind = event.kind === "project" ? "project" as const : undefined;
         rctx.pendingPluginTrust = {
             promptId: event.promptId as string,
+            ...(kind && { kind }),
             pluginNames: event.pluginNames as string[],
             pluginSummaries: event.pluginSummaries as string[],
             respond: event.respond as (trusted: boolean) => void,
@@ -901,6 +903,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         rctx.forwardEvent({
             type: "plugin_trust_prompt",
             promptId: event.promptId,
+            ...(kind && { kind }),
             pluginNames: event.pluginNames,
             pluginSummaries: event.pluginSummaries,
             ts: Date.now(),

@@ -1211,9 +1211,11 @@ export function SessionViewer({
                   <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
                   <div className="flex-1 min-w-0 space-y-2">
                     <div>
-                      <p className="text-sm font-medium text-foreground">Untrusted Project Plugins</p>
+                      <p className="text-sm font-medium text-foreground">{pluginTrustPrompt.kind === "project" ? "Untrusted Project" : "Untrusted Project Plugins"}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {pluginTrustPrompt.pluginNames.length === 1
+                        {pluginTrustPrompt.kind === "project"
+                          ? "This folder has project skills, commands, agents or settings that are ignored until you trust it. Trusting restarts the session to load them."
+                          : pluginTrustPrompt.pluginNames.length === 1
                           ? "A project-local Claude Code plugin wants to load. It can execute shell commands via hooks."
                           : `${pluginTrustPrompt.pluginNames.length} project-local Claude Code plugins want to load. They can execute shell commands via hooks.`}
                       </p>
@@ -1226,7 +1228,7 @@ export function SessionViewer({
                       ))}
                     </div>
                     <div className="flex items-center gap-2 pt-1">
-                      <button type="button" className="inline-flex items-center rounded-md bg-amber-500 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-amber-600 transition-colors" onClick={() => onPluginTrustResponse(true)}>Trust &amp; Load</button>
+                      <button type="button" className="inline-flex items-center rounded-md bg-amber-500 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-amber-600 transition-colors" onClick={() => onPluginTrustResponse(true)}>{pluginTrustPrompt.kind === "project" ? "Trust & Restart" : "Trust & Load"}</button>
                       <button type="button" className="inline-flex items-center rounded-md bg-muted px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted/80 transition-colors" onClick={() => onPluginTrustResponse(false)}>Skip</button>
                     </div>
                   </div>

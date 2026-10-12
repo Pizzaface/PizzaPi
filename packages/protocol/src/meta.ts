@@ -51,6 +51,8 @@ export interface MetaRetryState {
 
 export interface MetaPluginTrustPrompt {
   promptId: string;
+  /** "project" = pi project trust for the session cwd (pluginNames[0] is the path). Absent = Claude plugins. */
+  kind?: "project";
   pluginNames: string[];
   pluginSummaries: string[];
 }
