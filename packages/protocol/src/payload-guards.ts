@@ -137,7 +137,7 @@ function normalizePluginTrustPrompt(value: unknown): MetaPluginTrustPrompt | nul
   const pluginSummaries = Array.isArray(value.pluginSummaries)
     ? value.pluginSummaries.filter((n): n is string => typeof n === "string")
     : pluginNames;
-  return { promptId, pluginNames, pluginSummaries };
+  return { promptId, ...(value.kind === "project" && { kind: "project" as const }), pluginNames, pluginSummaries };
 }
 
 function normalizeMcpReport(value: unknown): MetaMcpReport | null {

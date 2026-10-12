@@ -19,6 +19,7 @@ import { updateTodoExtension } from "./update-todo.js";
 import { memoryExtension } from "./memory/index.js";
 import { goalExtension } from "./goal/index.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
+import { createProjectTrustPromptExtension } from "./project-trust-prompt.js";
 import { subagentExtension } from "./subagent.js";
 import { workflowExtension } from "./workflow/index.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
@@ -190,6 +191,11 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     const overlayRulesExtension = createPackageOverlayRulesExtension(options.cwd, agentDir, options.projectTrusted ?? false);
     if (overlayRulesExtension) {
         factories.push(named(overlayRulesExtension, "package-overlay-rules"));
+    }
+
+    if (!options.projectTrusted && !options.skipRelay) {
+        const projectTrustPrompt = createProjectTrustPromptExtension(options.cwd, agentDir);
+        if (projectTrustPrompt) factories.push(named(projectTrustPrompt, "project-trust-prompt"));
     }
 
     // Claude Code plugin adapter — discovers and loads plugins from standard dirs

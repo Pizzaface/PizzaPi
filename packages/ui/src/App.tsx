@@ -195,7 +195,7 @@ interface SessionState {
   retryState: { errorMessage: string; detectedAt: number } | null;
   pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: QuestionType }>; display: QuestionDisplayMode } | null;
   pendingPlan: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
-  pluginTrustPrompt: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
+  pluginTrustPrompt: { promptId: string; kind?: "project"; pluginNames: string[]; pluginSummaries: string[] } | null;
   pendingApproval: import("@pizzapi/protocol").MetaPendingApproval | null;
   activeToolCalls: Map<string, string>;
   mcpOAuthPastes: Array<{ serverName: string; authUrl: string; nonce: string; ts: number }>;
@@ -1625,6 +1625,7 @@ export function App() {
       if (pt && typeof pt.promptId === "string" && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
         setPluginTrustPrompt({
           promptId: pt.promptId,
+          ...(pt.kind === "project" && { kind: "project" as const }),
           pluginNames: pt.pluginNames,
           pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
         });
@@ -1775,6 +1776,7 @@ export function App() {
         if (pt.promptId && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
           setPluginTrustPrompt({
             promptId: pt.promptId,
+            ...(pt.kind === "project" && { kind: "project" as const }),
             pluginNames: pt.pluginNames,
             pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
           });
@@ -2815,6 +2817,7 @@ export function App() {
       if (typeof promptId === "string" && Array.isArray(names) && names.length > 0) {
         setPluginTrustPrompt({
           promptId,
+          ...(evt.kind === "project" && { kind: "project" as const }),
           pluginNames: names,
           pluginSummaries: Array.isArray(summaries) ? summaries : names,
         });

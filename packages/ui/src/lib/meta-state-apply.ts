@@ -30,7 +30,7 @@ export interface MetaStatePatch {
   planModeEnabled?: boolean;
   isCompacting?: boolean;
   retryState?: SessionMetaState["retryState"] | null;
-  pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
+  pluginTrustPrompt?: { promptId: string; kind?: "project"; pluginNames: string[]; pluginSummaries: string[] } | null;
   pendingApproval?: MetaPendingApproval | null;
   setPendingApproval?: boolean;
   tokenUsage?: TokenUsage | null;

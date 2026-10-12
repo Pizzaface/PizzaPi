@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { HooksConfig } from "../config.js";
 import { buildPizzaPiExtensionFactories } from "./factories.js";
+
+// The project-trust-prompt factory is runner-worker-only (gated on this env);
+// unset it so counts don't change when tests run inside a runner session.
+delete process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH;
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
 import { restartExtension } from "./restart.js";
