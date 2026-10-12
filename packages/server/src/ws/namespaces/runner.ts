@@ -1007,6 +1007,13 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
             log.info(`[trigger-reconciliation] runner ${runnerId} applied revision ${data?.revision}, ${data?.applied ?? 0} subscriptions${data?.errors?.length ? `, ${data.errors.length} errors` : ""}`);
+            if (Array.isArray(data?.errors) && data.errors.length > 0) {
+                // Runner-supplied strings: cap count and length so a misbehaving
+                // runner cannot flood the log.
+                const shown = data.errors.slice(0, 20).map((e: unknown) => String(e).slice(0, 300));
+                const more = data.errors.length > shown.length ? ` (+${data.errors.length - shown.length} more)` : "";
+                log.warn(`[trigger-reconciliation] runner ${runnerId} revision ${data?.revision} errors${more}:\n  ${shown.join("\n  ")}`);
+            }
         });
 
         // ── session_ready — worker session connected ─────────────────────────

@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it, mock } from "bun:test";
 mock.module("../../../sessions/redis.js", () => ({ deleteRelayEventCache: async () => {} }));
 afterAll(() => mock.restore());
 
-const { enqueueSessionEvent, resetPerSessionRelayState } = await import("./relay-state.js");
+const { enqueueSessionEvent, isSessionResetting, resetPerSessionRelayState } = await import("./relay-state.js");
 
 describe("resetPerSessionRelayState", () => {
     it("skips work queued before the reset instead of running it under the held lock", async () => {
@@ -29,6 +29,31 @@ describe("resetPerSessionRelayState", () => {
 
         expect(ran).toBe(0);
         expect(performance.now() - started).toBeLessThan(500);
+    });
+
+    it("lets a handler already in flight bail out instead of stalling the reset", async () => {
+        // The head of the queue had already started (and is polling for the
+        // lock) when the reset began, so the skip guard above cannot catch it.
+        // It must observe isSessionResetting and give up promptly.
+        let sawReset = false;
+        void enqueueSessionEvent("s3", async () => {
+            const deadline = performance.now() + 5_000;
+            while (performance.now() < deadline) {
+                if (isSessionResetting("s3")) {
+                    sawReset = true;
+                    return;
+                }
+                await new Promise((r) => setTimeout(r, 10));
+            }
+        });
+        await new Promise((r) => setTimeout(r, 0));
+
+        const started = performance.now();
+        await resetPerSessionRelayState("s3");
+
+        expect(sawReset).toBe(true);
+        expect(performance.now() - started).toBeLessThan(500);
+        expect(isSessionResetting("s3")).toBe(false);
     });
 
     it("runs work enqueued after the reset (the new generation)", async () => {

@@ -230,8 +230,11 @@ const httpServer = createServer(async (req, res) => {
 
         // If a streaming response failed after headers/body bytes were already
         // sent, we cannot send a JSON 500 without corrupting the response or
-        // hitting ERR_STREAM_WRITE_AFTER_END. Close whatever remains instead.
-        res.end();
+        // hitting ERR_STREAM_WRITE_AFTER_END. Abort the connection instead of
+        // ending it: res.end() writes the terminating chunk, so the client
+        // would accept a truncated body (e.g. a tunnel whose runner dropped
+        // mid-stream) as a complete, successful response.
+        res.destroy(e instanceof Error ? e : new Error(String(e)));
     }
 });
 
