@@ -56,8 +56,8 @@ test("mode switcher shows lifecycle counts scoped to Code and Work sessions", as
             { sessionId: "work-completed", shareUrl: "", cwd: "/work/task", startedAt: "", runnerId: "runner", isActive: false },
         ] });
     });
-    expect(elementsWithAttr(container, "span", "aria-label", "1 active · 0 waiting · 0 completed · 0 suspended")).toHaveLength(1);
-    expect(elementsWithAttr(container, "span", "aria-label", "0 active · 1 waiting · 1 completed · 1 suspended")).toHaveLength(1);
+    expect(elementsWithAttr(container, "span", "aria-label", "1 active")).toHaveLength(1);
+    expect(elementsWithAttr(container, "span", "aria-label", "1 waiting · 1 completed · 1 suspended")).toHaveLength(1);
 });
 
 test("session rows expose actions and valid tree/keyboard semantics", async () => {
