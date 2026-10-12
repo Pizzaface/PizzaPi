@@ -182,21 +182,25 @@ function LiveDot({ state }: { state: DotState }) {
 
 import { Skeleton } from "@/components/ui/skeleton";
 
-/** Small segmented chip: awaiting input / working / completed — segments render only when > 0. */
+/** Match the session-list status chip: show only nonzero counts in a compact segmented pill. */
 function ModeStatusCount({ counts }: { counts: ModeSessionStatusCounts }) {
     const segments = [
-        { key: "active", label: "active", short: "A", cls: "text-sky-500" },
-        { key: "waiting", label: "waiting", short: "W", cls: "text-amber-500" },
-        { key: "completed", label: "completed", short: "C", cls: "text-green-500" },
-        { key: "suspended", label: "suspended", short: "S", cls: "text-muted-foreground" },
+        { key: "active", label: "active", cls: "text-sky-500" },
+        { key: "waiting", label: "waiting", cls: "text-amber-500" },
+        { key: "completed", label: "completed", cls: "text-green-500" },
+        { key: "suspended", label: "suspended", cls: "text-muted-foreground" },
     ] as const;
-    const title = segments.map((segment) => `${counts[segment.key]} ${segment.label}`).join(" · ");
+    const visibleSegments = segments.filter((segment) => counts[segment.key] > 0);
+    if (visibleSegments.length === 0) return null;
+    const title = visibleSegments.map((segment) => `${counts[segment.key]} ${segment.label}`).join(" · ");
     return (
-        <span className="flex items-center gap-1 font-mono text-[0.55rem] tabular-nums" title={title} aria-label={title}>
-            {segments.map((segment) => (
-                <span key={segment.key} className={cn("flex items-center gap-0.5", segment.cls)}>
-                    {segment.short}{counts[segment.key]}
-                </span>
+        <span
+            className="flex flex-shrink-0 items-center divide-x divide-sidebar-border rounded-full border border-sidebar-border bg-sidebar text-[0.5rem] font-mono font-bold leading-none tabular-nums"
+            title={title}
+            aria-label={title}
+        >
+            {visibleSegments.map((segment) => (
+                <span key={segment.key} className={cn("px-[3px] py-px", segment.cls)}>{counts[segment.key]}</span>
             ))}
         </span>
     );
