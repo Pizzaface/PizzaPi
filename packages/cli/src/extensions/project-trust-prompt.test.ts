@@ -32,7 +32,7 @@ function run(restart: () => void = () => {}) {
         events: { emit: (name: string, data: any) => emitted.push({ name, data }) },
     };
     createProjectTrustPromptExtension(cwd, agentDir, restart)!(pi);
-    handler({}, { hasUI: false });
+    handler({}, { hasUI: true }); // runner workers bind a web-approval uiContext
     return emitted;
 }
 

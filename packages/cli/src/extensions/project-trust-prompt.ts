@@ -33,8 +33,10 @@ export function createProjectTrustPromptExtension(
 
     return (pi) => {
         let prompted = false;
-        pi.on("session_start", (_event, ctx) => {
-            if (prompted || ctx.hasUI) return;
+        pi.on("session_start", () => {
+            // No ctx.hasUI guard: runner workers bind a web-approval uiContext, so
+            // hasUI is true there too. The env gate above already limits this to workers.
+            if (prompted) return;
             const store = new ProjectTrustStore(agentDir);
             if (store.get(cwd) !== null) return; // explicit decision already saved
             prompted = true;
