@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin:0; padding:10px; background:#0a0a0b; color:#e4e4e7; font:11px system-ui, sans-serif; }
+  h1 { font-size:12px; margin:0 0 8px; }
+  .row { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #27272a; }
+  .ready { color:#4ade80; } .loading { color:#facc15; } .error { color:#f87171; } .idle { color:#a1a1aa; }
+  button { background:#18181b; color:#e4e4e7; border:1px solid #27272a; border-radius:4px; padding:4px 8px; font-size:11px; margin-top:8px; }
+  p { color:#a1a1aa; }
+</style>
+</head>
+<body>
+<h1>Live voice engine</h1>
+<div class="row"><span>Speech-to-text (Moonshine)</span><span id="stt">…</span></div>
+<div class="row"><span>Text-to-speech (Kokoro)</span><span id="tts">…</span></div>
+<div id="progress"></div>
+<div id="err" class="error"></div>
+<button id="warm">Download / load models</button>
+<p>Start a voice chat with the <b>Live</b> button in any session's composer. Models run locally on this runner.</p>
+<script>
+  const $ = (id) => document.getElementById(id);
+  async function refresh() {
+    try {
+      const s = await (await fetch("./api/status")).json();
+      for (const k of ["stt", "tts"]) { $(k).textContent = s[k]; $(k).className = s[k]; }
+      $("progress").innerHTML = Object.entries(s.progress || {}).map(([f, p]) => `<div class="row"><span>${f.split("/").pop()}</span><span>${p}%</span></div>`).join("");
+      $("err").textContent = s.error || "";
+    } catch (e) { $("err").textContent = String(e); }
+  }
+  $("warm").onclick = async () => { await fetch("./api/warm", { method: "POST" }); refresh(); };
+  refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>

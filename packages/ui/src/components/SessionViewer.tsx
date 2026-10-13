@@ -71,7 +71,9 @@ import {
   Zap,
   Pencil,
   BarChart3,
+  AudioLines,
 } from "lucide-react";
+import { LiveOverlay } from "@/components/session-viewer/LiveOverlay";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
 import { PluginCommandContext, PluginResultCountContext, type PluginCommandHandler } from "@/components/plugins/plugins-data";
@@ -178,6 +180,7 @@ export function SessionViewer({
   goal,
   planModeEnabled,
   runnerId,
+  livePort,
   sessionCwd,
   onAppendSystemMessage,
   onSpawnAgentSession,
@@ -210,6 +213,10 @@ export function SessionViewer({
 
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
+  // Non-null while the Live voice overlay is open; the context is unlocked by the Live tap.
+  const [liveAudioContext, setLiveAudioContext] = React.useState<AudioContext | null>(null);
+  // Live is per session: switching sessions ends the call.
+  React.useEffect(() => () => setLiveAudioContext(null), [sessionId]);
   // True when the session has been stuck hydrating ("Connecting…"/"Loading
   // session…") long enough that the disabled composer needs an explanation.
   const [hydrationStuck, setHydrationStuck] = React.useState(false);
@@ -2007,12 +2014,43 @@ export function SessionViewer({
                       onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "compact" });
                     } : undefined}
                   />
+                  {sessionId && livePort != null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Create + resume inside the tap: iOS only unlocks audio in a user gesture.
+                        const ctx = new AudioContext();
+                        void ctx.resume();
+                        setLiveAudioContext(ctx);
+                      }}
+                      disabled={!composerReady}
+                      className="inline-flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:opacity-40"
+                      title="Start a live voice chat"
+                      aria-label="Start a live voice chat"
+                    >
+                      <AudioLines className="size-4" />
+                    </button>
+                  )}
                   <ComposerAttachmentButton disabled={!composerReady} />
                   <ComposerSubmitButton sessionId={sessionId} input={input} agentActive={agentActive} onExec={onExec} isTouchDevice={isTouchDevice} />
                 </div>
               </PromptInputFooter>
             </PromptInput>
           </div>
+
+          {liveAudioContext && sessionId && livePort != null && (
+            <LiveOverlay
+              audioContext={liveAudioContext}
+              sessionId={sessionId}
+              sessionName={sessionName ?? undefined}
+              runnerId={runnerId}
+              port={livePort}
+              messages={messages}
+              agentActive={!!agentActive}
+              send={(text, steer) => onSendInput?.({ text, files: [], deliverAs: steer ? "steer" : "followUp" }) ?? false}
+              onClose={() => setLiveAudioContext(null)}
+            />
+          )}
 
           {/* ── Dialogs ───────────────────────────────────────────────────── */}
           <Dialog open={showIncompleteTriggerDialog} onOpenChange={setShowIncompleteTriggerDialog}>
