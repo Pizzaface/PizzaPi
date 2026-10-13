@@ -1315,8 +1315,14 @@ export function App() {
           let keyMap: Map<string, number> | null = null;
 
           for (const { raw: pendingRaw, key } of pending.values()) {
-            let msg = toRelayMessage(pendingRaw, key);
-            if (!msg) continue;
+            // `key` is already the computed message key. Re-deriving it with
+            // `key` as the fallback double-prefixes fallback keys
+            // ("assistant:fallback:assistant:fallback:…"), so message_end's
+            // evictPartial (which looks for `key`) never finds the partial and
+            // the streamed reply stays in `messages` twice.
+            const base = toRelayMessage(pendingRaw, key);
+            if (!base) continue;
+            let msg = base.key === key ? base : { ...base, key };
 
             // Lazily initialize the map of existing keys to indices to convert
             // O(N*M) lookups into O(N+M)
@@ -5868,6 +5874,7 @@ export function App() {
                         analysis={analysis}
                         planModeEnabled={planModeEnabled}
                         runnerId={activeSessionInfo?.runnerId ?? undefined}
+                        livePort={dynamicPanels.find((p) => p.serviceId === "live")?.port}
                         sessionCwd={activeSessionInfo?.cwd || undefined}
                         onAppendSystemMessage={appendLocalSystemMessage}
                         onSpawnAgentSession={handleSpawnAgentSession}
