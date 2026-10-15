@@ -26,9 +26,10 @@ Preserves PizzaPi's provider-runtime behavior not present upstream:
   injects `web_search_20250305` when `PIZZAPI_WEB_SEARCH` is truthy, renders
   `server_tool_use` / `web_search_tool_result` blocks into PizzaPi's assistant
   message shape, and round-trips those blocks on replay.
-- OpenAI Responses hosted web search: surfaces `web_search_call` items as the
-  same UI-only server-tool/result blocks and skips those blocks when replaying
-  prior assistant messages.
+- OpenAI Responses hosted web search: surfaces `web_search_call` items as
+  server-tool/result UI blocks, excludes those blocks from subsequent model
+  requests before cross-model normalization, and excludes legacy synthetic
+  search-history lines without mutating the stored transcript.
 - Anthropic OAuth refresh first tries Claude Code credentials from macOS
   Keychain and `~/.claude/.credentials.json`, then falls back to Pi's stored
   Anthropic refresh token.

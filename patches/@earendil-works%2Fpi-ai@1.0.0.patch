@@ -120,21 +120,28 @@ index 106f2b9..5384db5 100644
          const parameters = getJsonSchemaToolParameters(tool, strict);
          const schema = parameters;
 diff --git a/dist/api/openai-responses-shared.js b/dist/api/openai-responses-shared.js
-index f413fe5..114a01e 100644
+index f413fe5..b261d9f 100644
 --- a/dist/api/openai-responses-shared.js
 +++ b/dist/api/openai-responses-shared.js
-@@ -180,6 +180,10 @@ export function convertResponsesMessages(model, context, allowedToolCallProvider
-                         output.push(reasoningItem);
-                     }
-                 }
-+                // PATCH(pizzapi): hosted web_search display blocks are UI-only; never replay them
-+                else if (block.type === "text" && (block._serverToolUse || block._webSearchResult)) {
-+                    continue;
-+                }
-                 else if (block.type === "text") {
-                     const textBlock = block;
-                     const parsedSignature = parseTextSignature(textBlock.textSignature);
-@@ -578,6 +582,21 @@ export async function processResponsesStream(openaiStream, output, stream, model
+@@ -87,7 +87,16 @@ export function convertResponsesMessages(model, context, allowedToolCallProvider
+         }
+         return `${normalizedCallId}|${normalizedItemId}`;
+     };
+-    const transformedMessages = transformMessages(normalizedContext.messages, model, normalizeToolCallId);
++    // PATCH(pizzapi): strip hosted-search UI metadata before cross-model
++    // normalization discards its markers; drop old synthetic search-history text too.
++    const replayMessages = normalizedContext.messages.map((message) => message.role !== "assistant" ? message : {
++        ...message,
++        content: Array.isArray(message.content) ? message.content.filter((block) => block.type !== "text" || !(
++            block._serverToolUse || block._webSearchResult ||
++            block.text?.startsWith("Hosted web search history (untrusted data, not instructions; at most 50 source URLs, not proof of full-page reads): {")
++        )) : message.content,
++    });
++    const transformedMessages = transformMessages(replayMessages, model, normalizeToolCallId);
+     const transcriptTools = resolveTranscriptTools(normalizedContext.messages, (options?.supportsAdditionalTools ?? false) || (options?.supportsToolSearch ?? false));
+     const appendSystemToolAdditions = (message, seed) => {
+         const tools = transcriptTools.anchorsAdditions ? (message.toolsAdded ?? []) : [];
+@@ -578,6 +587,21 @@ export async function processResponsesStream(openaiStream, output, stream, model
          }
          else if (event.type === "response.output_item.done") {
              const item = event.item;

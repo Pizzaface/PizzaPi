@@ -204,7 +204,7 @@ A documented subset of settings can also be overridden with **environment variab
 | `allowProjectProviders` | `boolean` | — | **Obsolete and ignored.** Project-local `.pizzapi/providers/` is no longer loaded. PizzaPi warns if this key is still present. |
 | `providers` | `object` | — | **Obsolete and ignored.** The extension-provider layer was removed; PizzaPi warns if this key is still present. Use a [runner service](/PizzaPi/customization/runner-services/) for external integrations, or a plain pi extension for per-session behaviour. |
 | `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) and [Per-Provider Overrides](#per-provider-overrides) below. |
-| `providerSettings.<provider>.webSearch` | `object` | — | Provider web-search config. Supported by `anthropic` and `ollama-cloud` as documented below. |
+| `providerSettings.<provider>.webSearch` | `object` | — | Provider web-search config. Supported by `anthropic`, `openai-codex`, and `ollama-cloud` as documented below. |
 | `overlayServiceGrants` | `{ package: string; services: string[] }[]` | `[]` | Global trust grants for daemon services declared by installed pi.pizzapi overlay packages. Managed by PizzaPi package commands; project configs cannot self-authorize these grants. |
 | `overlayServiceGrants[].package` | `string` | — | Normalized package identity, e.g. `npm:@acme/pi-github` or `local:/abs/path`. |
 | `overlayServiceGrants[].services` | `string[]` | — | Exact service IDs granted for that package. New services added by a package update are not auto-granted. |
@@ -269,6 +269,7 @@ denies the path.
 PizzaPi can add web search tools to supported providers, giving the agent the ability to search the web during conversations.
 
 - **Anthropic** uses Anthropic's server-side `web_search_20250305` tool type.
+- **OpenAI Codex** uses OpenAI's hosted `web_search` tool. It is available directly to the model, not through MCP tool discovery.
 - **Ollama Cloud** registers `web_search` and `web_fetch` tools that call Ollama's REST APIs with your Ollama Cloud credentials.
 
 ### Configuration
@@ -323,6 +324,20 @@ For Ollama Cloud, enable web search under `providerSettings["ollama-cloud"].webS
 | `maxContentChars` | `number` | `8000` | Truncate fetched page content to this many characters (`1`–`100000`). |
 | `maxLinks` | `number` | `100` | Truncate fetched page links to this many entries (`1`–`1000`). |
 
+For OpenAI Codex, enable hosted search under `providerSettings["openai-codex"].webSearch`:
+
+```json
+{
+  "providerSettings": {
+    "openai-codex": { "webSearch": { "enabled": true } }
+  }
+}
+```
+
+The `enabled` flag defaults to `false`. You can also toggle it under **Runner → Settings → Web Search → OpenAI Codex**; changes apply on the next session start.
+
+Codex receives explicit hosted-search availability guidance on each enabled request. Search queries and source URLs appear in the session's search cards, but are not replayed to the model as assistant text. This avoids confusing a displayed search with a completed search on a later turn, including after a model switch. Readable answer text and any citations the agent included in it remain in the conversation.
+
 ## Per-Provider Overrides
 
 System prompt controls, AGENTS.md inclusion, and MCP server availability can be
@@ -375,6 +390,7 @@ You can also enable web search via environment variables (environment variables 
 | `PIZZAPI_WEB_SEARCH_MAX_USES` | Max searches per request (default: `5`). |
 | `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of allowed domains. |
 | `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of blocked domains. |
+| `PIZZAPI_OPENAI_CODEX_WEB_SEARCH` | Set to `1` to enable OpenAI Codex hosted search. `0`, `false`, `no`, and `off` disable it. |
 | `PIZZAPI_OLLAMA_WEB_SEARCH` | Set to `1` to enable Ollama Cloud web tools. |
 | `PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS` | Default Ollama search results per request (`1`–`10`, default: `5`). |
 | `PIZZAPI_OLLAMA_WEB_FETCH_MAX_CONTENT_CHARS` | Max chars for fetched page content (`1`–`100000`, default: `8000`). |
