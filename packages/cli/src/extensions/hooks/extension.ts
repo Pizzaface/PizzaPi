@@ -255,7 +255,8 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                 try {
                     const payload = JSON.stringify({
                         event: "BeforeAgentStart",
-                        prompt: event.prompt,
+                        // pi 1.2: custom-message runs fire this too, without a prompt.
+                        prompt: event.messageType === "user" ? event.prompt : undefined,
                         system_prompt: event.systemPrompt,
                     });
 

@@ -6,8 +6,8 @@ deliberately **not patched locally** — each lives only in vendored `node_modul
 local patch costs a hunk per item plus re-porting on every `pi` bump. File these upstream
 instead; only patch if one starts actually biting PizzaPi users.
 
-Re-verified against the currently pinned version: `@earendil-works/pi-coding-agent@1.0.0`,
-`@earendil-works/pi-tui@1.0.0` (see `package.json`). All 4 are still present.
+Re-verified against the currently pinned version: `@earendil-works/pi-coding-agent@1.2.0`,
+`@earendil-works/pi-tui@1.2.0` (see `package.json`). All 4 are still present.
 
 Godmother reference: `b6GxF39s`.
 
