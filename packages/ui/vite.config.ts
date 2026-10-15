@@ -4,6 +4,9 @@ import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 import fs from "fs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 const API_PORT = process.env.PORT ?? "7492";
 const buildTimestamp = new Date().toISOString();
@@ -146,6 +149,8 @@ export default defineConfig({
     resolve: {
         alias: {
             "@": path.resolve(__dirname, "./src"),
+            // WASM bindings must match the pinned runtime and ship with the UI.
+            "@live-ort": path.dirname(require.resolve("onnxruntime-web/wasm")),
             // The UI only uses createLogger from @pizzapi/tools.  Resolve the
             // bare specifier directly to the browser-safe log module so Vite
             // bundles it instead of leaving it as an unresolvable bare import.
@@ -200,7 +205,7 @@ export default defineConfig({
         },
     },
     optimizeDeps: {
-        exclude: ["@pizzapi/tools"],
+        exclude: ["@pizzapi/tools", "@live-ort/ort-wasm-simd-threaded.mjs?url"],
         esbuildOptions: {
             target: "es2021",
             define: {

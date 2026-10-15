@@ -3,59 +3,6 @@
  * WAV encoding for upload, and an ordered playback queue for TTS replies.
  */
 
-export interface VadEvent {
-    type: "start" | "end" | "discard";
-}
-
-/**
- * Adaptive energy VAD over fixed-size frames.
- * ponytail: RMS + noise floor, not a neural VAD. Fine with echo cancellation in
- * a normal room; swap for Silero (onnxruntime-web, ~10 MB wasm) if noisy
- * environments or TTS self-triggering become a problem.
- */
-export class EnergyVad {
-    floor = 0.004;
-    #speaking = false;
-    #voiced = 0;
-    #silent = 0;
-    #frames = 0;
-
-    constructor(
-        private frameMs: number,
-        private opts = { startMs: 90, endSilenceMs: 800, minSpeechMs: 300, maxSpeechMs: 30_000 },
-    ) {}
-
-    get speaking() {
-        return this.#speaking;
-    }
-
-    /** `strict` raises the bar while our own TTS is playing (barge-in must be deliberate). */
-    feed(rms: number, strict = false): VadEvent | null {
-        const threshold = Math.max(this.floor * (strict ? 6 : 3), strict ? 0.04 : 0.012);
-        const voiced = rms > threshold;
-        if (!this.#speaking) {
-            // Track the room's noise floor only while nobody (us included) is talking.
-            if (!voiced && !strict) this.floor = Math.min(Math.max(this.floor * 0.95 + rms * 0.05, 0.002), 0.05);
-            this.#voiced = voiced ? this.#voiced + 1 : 0;
-            if (this.#voiced * this.frameMs >= this.opts.startMs) {
-                this.#speaking = true;
-                this.#silent = 0;
-                this.#frames = this.#voiced;
-                return { type: "start" };
-            }
-            return null;
-        }
-        this.#frames++;
-        this.#silent = voiced ? 0 : this.#silent + 1;
-        const done = this.#silent * this.frameMs >= this.opts.endSilenceMs || this.#frames * this.frameMs >= this.opts.maxSpeechMs;
-        if (!done) return null;
-        this.#speaking = false;
-        this.#voiced = 0;
-        const speechMs = (this.#frames - this.#silent) * this.frameMs;
-        return { type: speechMs >= this.opts.minSpeechMs ? "end" : "discard" };
-    }
-}
-
 export function rms(frame: Float32Array): number {
     let s = 0;
     for (let i = 0; i < frame.length; i++) s += frame[i]! * frame[i]!;
@@ -92,12 +39,10 @@ export interface MicHandlers {
     onSpeechEnd(wav: ArrayBuffer): void | Promise<void>;
     onDiscard(): void;
     onLevel(level: number): void;
-    /** True while TTS is playing, so the VAD demands a louder, deliberate barge-in. */
-    isPlaying(): boolean;
+    onError(error: unknown): void;
 }
 
 const FRAME = 2048;
-const PREROLL_FRAMES = 6;
 
 /** Request mic access. Call directly from a user gesture on mobile browsers. */
 export function requestMicrophone(): Promise<MediaStream> {
@@ -112,70 +57,136 @@ export async function startMic(
     ctx: AudioContext,
     h: MicHandlers,
     streamPromise: Promise<MediaStream>,
+    signal?: AbortSignal,
 ): Promise<{ stop(): void; setMuted(m: boolean): void }> {
     const stream = await streamPromise;
-    for (const track of stream.getAudioTracks()) track.enabled = true;
-    const src = ctx.createMediaStreamSource(stream);
-    // ponytail: ScriptProcessorNode is deprecated but works everywhere (incl. iOS
-    // Safari) with no worklet module to serve; move to AudioWorklet if it's removed.
-    const proc = ctx.createScriptProcessor(FRAME, 1, 1);
-    const vad = new EnergyVad((FRAME / ctx.sampleRate) * 1000);
-    const preroll: Float32Array[] = [];
-    let utterance: Float32Array[] = [];
+    const stopTracks = () => { for (const track of stream.getTracks()) track.stop(); };
+    const { createSpeechDetector } = await import("./vad").catch((error: unknown) => {
+        stopTracks();
+        throw error;
+    });
+    if (signal?.aborted) {
+        stopTracks();
+        signal.throwIfAborted();
+    }
+    let stopped = false;
     let muted = false;
     let transcribing = false;
-
-    proc.onaudioprocess = (e) => {
-        const frame = new Float32Array(e.inputBuffer.getChannelData(0));
-        if (muted || transcribing) return;
-        const level = rms(frame);
-        h.onLevel(level);
-        const wasSpeaking = vad.speaking;
-        const ev = vad.feed(level, h.isPlaying());
-        if (wasSpeaking || ev?.type === "start") utterance.push(frame);
-        else {
-            preroll.push(frame);
-            if (preroll.length > PREROLL_FRAMES) preroll.shift();
-        }
-        if (ev?.type === "start") {
-            utterance = [...preroll, ...utterance];
-            preroll.length = 0;
+    let hearing = false;
+    let processing: Promise<void> | null = null;
+    let generation = 0;
+    let processingGeneration = 0;
+    const acceptsDetection = () => !stopped && !muted && !transcribing && generation === processingGeneration;
+    const detector = await createSpeechDetector(ctx.sampleRate, {
+        start: () => {
+            if (!acceptsDetection()) return;
+            hearing = true;
             h.onSpeechStart();
-        } else if (ev) {
-            const all = utterance;
-            utterance = [];
-            if (ev.type === "discard") return h.onDiscard();
-            const merged = new Float32Array(all.reduce((n, f) => n + f.length, 0));
-            let o = 0;
-            for (const f of all) {
-                merged.set(f, o);
-                o += f.length;
-            }
-            // One decision at a time: a second noise must not resume playback
-            // while the first utterance is still awaiting transcription.
-            transcribing = true;
-            void Promise.resolve(h.onSpeechEnd(encodeWav(merged, ctx.sampleRate)))
-                .finally(() => { transcribing = false; });
-        }
-    };
-    src.connect(proc);
-    // Some browsers only pull audio through a processor that reaches the destination.
-    const sink = ctx.createGain();
-    sink.gain.value = 0;
-    proc.connect(sink).connect(ctx.destination);
-
-    return {
-        stop() {
-            proc.onaudioprocess = null;
-            proc.disconnect();
-            src.disconnect();
-            sink.disconnect();
-            for (const t of stream.getTracks()) t.stop();
         },
+        discard: () => {
+            if (!acceptsDetection()) return;
+            hearing = false;
+            h.onDiscard();
+        },
+        end: (samples) => {
+            if (!acceptsDetection()) return;
+            hearing = false;
+            transcribing = true;
+            void Promise.resolve().then(() => {
+                if (!stopped) return h.onSpeechEnd(encodeWav(samples, 16000));
+            }).catch((error: unknown) => { if (!stopped) h.onError(error); }).finally(() => {
+                transcribing = false;
+                if (!stopped) detector.reset();
+            });
+        },
+    }, signal).catch((error: unknown) => {
+        stopTracks();
+        throw error;
+    });
+    if (signal?.aborted) {
+        stopTracks();
+        await detector.destroy();
+        signal.throwIfAborted();
+    }
+    for (const track of stream.getAudioTracks()) track.enabled = true;
+    const nodes: AudioNode[] = [];
+    let proc: ScriptProcessorNode;
+    try {
+        const src = ctx.createMediaStreamSource(stream);
+        nodes.push(src);
+        // ponytail: reuse the existing browser capture adapter; move to a worklet
+        // if ScriptProcessor support is removed. Silero handles speech detection.
+        proc = ctx.createScriptProcessor(FRAME, 1, 1);
+        nodes.push(proc);
+        const sink = ctx.createGain();
+        nodes.push(sink);
+        sink.gain.value = 0;
+        src.connect(proc);
+        proc.connect(sink).connect(ctx.destination);
+    } catch (error) {
+        for (const node of nodes) node.disconnect();
+        stopTracks();
+        await detector.destroy();
+        throw error;
+    }
+    proc.onaudioprocess = (e) => {
+        // Bound inference work: don't build an ever-growing backlog on slow devices.
+        if (stopped || muted || transcribing || processing) return;
+        const frame = new Float32Array(e.inputBuffer.getChannelData(0));
+        h.onLevel(rms(frame));
+        processingGeneration = generation;
+        processing = detector.process(frame, acceptsDetection)
+            .catch((error: unknown) => {
+                if (stopped) return;
+                stop();
+                h.onError(error);
+            })
+            .finally(() => { processing = null; });
+    };
+    const stop = () => {
+        if (stopped) return;
+        stopped = true;
+        signal?.removeEventListener("abort", stop);
+        proc.onaudioprocess = null;
+        for (const node of nodes) node.disconnect();
+        stopTracks();
+        // Do not release an ONNX session while its last frame is in flight.
+        void Promise.resolve(processing).then(() => detector.destroy()).catch(h.onError);
+    };
+    signal?.addEventListener("abort", stop, { once: true });
+    return {
+        stop,
         setMuted(m) {
+            if (stopped || muted === m) return;
+            generation++;
             muted = m;
             for (const t of stream.getAudioTracks()) t.enabled = !m;
+            if (m && hearing) {
+                hearing = false;
+                h.onDiscard();
+            }
+            void Promise.resolve(processing).then(() => { if (!stopped) detector.reset(); });
         },
+    };
+}
+
+/** Kokoro pads each sentence with silence; retain 80 ms to avoid clipping breaths. */
+export function playbackBounds(buffer: AudioBuffer): { start: number; end: number } {
+    let first = buffer.length;
+    let last = -1;
+    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+        const samples = buffer.getChannelData(channel);
+        let start = 0;
+        let end = samples.length - 1;
+        while (start < samples.length && Math.abs(samples[start]!) < 0.0005) start++;
+        while (end >= start && Math.abs(samples[end]!) < 0.0005) end--;
+        first = Math.min(first, start);
+        last = Math.max(last, end);
+    }
+    if (last < first) return { start: 0, end: 0 };
+    return {
+        start: Math.max(0, first / buffer.sampleRate - 0.08),
+        end: Math.min(buffer.duration, (last + 1) / buffer.sampleRate + 0.08),
     };
 }
 
@@ -250,8 +261,9 @@ export class PlaybackQueue {
             const item = this.#queue.shift()!;
             const buf = await item.buf;
             if (!buf || gen !== this.#gen) continue;
-            let offset = 0;
-            while (offset < buf.duration && gen === this.#gen) {
+            const bounds = playbackBounds(buf);
+            let offset = bounds.start;
+            while (offset < bounds.end && gen === this.#gen) {
                 if (this.#paused) await new Promise<void>((resolve) => { this.#wake = resolve; });
                 if (gen !== this.#gen) break;
                 if (this.#paused) continue;
@@ -267,16 +279,16 @@ export class PlaybackQueue {
                         this.#stopCurrent = null;
                         resolve();
                     };
-                    node.onended = () => { offset = buf.duration; finish(); };
+                    node.onended = () => { offset = bounds.end; finish(); };
                     this.#stopCurrent = () => {
-                        offset = Math.min(buf.duration, offset + this.ctx.currentTime - startedAt);
+                        offset = Math.min(bounds.end, offset + this.ctx.currentTime - startedAt);
                         // Resolve synchronously: resume may arrive before the
                         // browser delivers the stopped source's ended event.
                         node.onended = null;
                         node.stop();
                         finish();
                     };
-                    node.start(0, offset);
+                    node.start(0, offset, bounds.end - offset);
                 });
             }
         }

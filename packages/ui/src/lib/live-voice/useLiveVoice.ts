@@ -41,6 +41,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const [base, setBase] = React.useState<URL | null>(null);
     const [fallbackBase, setFallbackBase] = React.useState<URL | null>(null);
     const [ready, setReady] = React.useState(false);
+    const [micReady, setMicReady] = React.useState(false);
     const [status, setStatus] = React.useState("Connecting…");
     const [error, setError] = React.useState<string | null>(null);
     const [hearing, setHearing] = React.useState(false);
@@ -166,9 +167,17 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         );
         queueRef.current = queue;
         let stopped = false;
+        const ac = new AbortController();
+        setMicReady(false);
+        setStatus("Loading speech detector…");
 
         startMic(ctx, {
-            isPlaying: () => queue.playing,
+            onError: (e) => {
+                if (stopped) return;
+                queue.resume();
+                setHearing(false);
+                setError(e instanceof Error ? e.message : String(e));
+            },
             onLevel: (l) => {
                 if (!queue.playing) levelRef.current = Math.min(1, l * 8);
             },
@@ -186,7 +195,10 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                 setHearing(false);
                 setTranscribing(true);
                 try {
-                    const r = await api("api/stt", { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav });
+                    const r = await api("api/stt", {
+                        method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav,
+                        signal: AbortSignal.any([ac.signal, AbortSignal.timeout(10_000)]),
+                    });
                     const { text, error: err } = (await r.json()) as { text?: string; error?: string };
                     if (!r.ok) throw new Error(err ?? `stt ${r.status}`);
                     if (stopped) return;
@@ -209,12 +221,17 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                     if (!stopped) setTranscribing(false);
                 }
             },
-        }, o.micStream).then(
+        }, o.micStream, ac.signal).then(
             (mic) => {
                 if (stopped) mic.stop();
-                else micRef.current = mic;
+                else {
+                    micRef.current = mic;
+                    setMicReady(true);
+                }
             },
-            (e: unknown) => setError(e instanceof DOMException && e.name === "NotAllowedError" ? "Microphone access was denied." : String(e)),
+            (e: unknown) => {
+                if (!stopped) setError(e instanceof DOMException && e.name === "NotAllowedError" ? "Microphone access was denied." : String(e));
+            },
         );
 
         let raf = 0;
@@ -226,6 +243,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
 
         return () => {
             stopped = true;
+            ac.abort();
             cancelAnimationFrame(raf);
             queue.clear();
             micRef.current?.stop();
@@ -258,7 +276,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
 
     const phase: LivePhase = error
         ? "error"
-        : !ready
+        : !ready || !micReady
           ? "starting"
           : hearing
             ? "hearing"
