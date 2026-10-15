@@ -42,6 +42,8 @@ export function tunnelIframeSandbox(isolated: boolean): string {
 
 export interface ResolvedTunnelTarget {
     href: string;
+    /** Signed relay-path URL to retry if the isolated tunnel host is unreachable. */
+    fallbackHref?: string;
     /** True only for the dedicated tunnel origin (never the relay origin). */
     isolated: boolean;
 }
@@ -68,14 +70,15 @@ export async function resolveTunnelTarget(
         throw new Error(`HTTP ${res.status}${body ? ` — ${body.slice(0, 200)}` : ""}`);
     }
     const data = (await res.json()) as { url?: unknown; hostUrl?: unknown };
+    const signedUrl = typeof data.url === "string" && data.url.startsWith("/api/tunnel/auth/")
+        ? resolveMobileUrl(data.url)
+        : null;
 
     if (typeof data.hostUrl === "string" && isReachableHostUrl(data.hostUrl, isMobileBundled)) {
-        return { href: data.hostUrl, isolated: true };
+        return { href: data.hostUrl, ...(signedUrl ? { fallbackHref: signedUrl } : {}), isolated: true };
     }
-    if (typeof data.url !== "string" || !data.url.startsWith("/api/tunnel/auth/")) {
-        throw new Error("token response missing a signed tunnel url");
-    }
-    return { href: resolveMobileUrl(data.url), isolated: false };
+    if (!signedUrl) throw new Error("token response missing a signed tunnel url");
+    return { href: signedUrl, isolated: false };
 }
 
 /** One-shot href for event handlers (e.g. "open in new tab"). */

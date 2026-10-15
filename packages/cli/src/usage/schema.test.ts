@@ -57,7 +57,7 @@ test("openUsageDb initializes a new database with correct schema", () => {
 
   // Check schema version is 2
   const versionInfo = db.query("PRAGMA user_version").get() as any;
-  expect(versionInfo.user_version).toBe(2);
+  expect(versionInfo.user_version).toBe(3);
 
   // Check journal mode is WAL
   const journalModeInfo = db.query("PRAGMA journal_mode").get() as any;
@@ -81,7 +81,7 @@ test("openUsageDb opens an existing database successfully without recreation", (
 
   // Schema version should still be 2
   const versionInfo = db2.query("PRAGMA user_version").get() as any;
-  expect(versionInfo.user_version).toBe(2);
+  expect(versionInfo.user_version).toBe(3);
 
   db2.close();
 });

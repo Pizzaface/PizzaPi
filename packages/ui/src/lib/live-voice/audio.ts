@@ -89,7 +89,7 @@ export function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffe
 
 export interface MicHandlers {
     onSpeechStart(): void;
-    onSpeechEnd(wav: ArrayBuffer): void;
+    onSpeechEnd(wav: ArrayBuffer): void | Promise<void>;
     onDiscard(): void;
     onLevel(level: number): void;
     /** True while TTS is playing, so the VAD demands a louder, deliberate barge-in. */
@@ -99,11 +99,22 @@ export interface MicHandlers {
 const FRAME = 2048;
 const PREROLL_FRAMES = 6;
 
-/** Open the mic. Must be called from a user gesture on iOS (shares `ctx`). */
-export async function startMic(ctx: AudioContext, h: MicHandlers): Promise<{ stop(): void; setMuted(m: boolean): void }> {
-    const stream = await navigator.mediaDevices.getUserMedia({
+/** Request mic access. Call directly from a user gesture on mobile browsers. */
+export function requestMicrophone(): Promise<MediaStream> {
+    if (!navigator.mediaDevices?.getUserMedia) return Promise.reject(new Error("Microphone capture is unavailable in this browser."));
+    return navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
+}
+
+/** Connect an already-approved mic stream to the audio pipeline. */
+export async function startMic(
+    ctx: AudioContext,
+    h: MicHandlers,
+    streamPromise: Promise<MediaStream>,
+): Promise<{ stop(): void; setMuted(m: boolean): void }> {
+    const stream = await streamPromise;
+    for (const track of stream.getAudioTracks()) track.enabled = true;
     const src = ctx.createMediaStreamSource(stream);
     // ponytail: ScriptProcessorNode is deprecated but works everywhere (incl. iOS
     // Safari) with no worklet module to serve; move to AudioWorklet if it's removed.
@@ -112,10 +123,11 @@ export async function startMic(ctx: AudioContext, h: MicHandlers): Promise<{ sto
     const preroll: Float32Array[] = [];
     let utterance: Float32Array[] = [];
     let muted = false;
+    let transcribing = false;
 
     proc.onaudioprocess = (e) => {
         const frame = new Float32Array(e.inputBuffer.getChannelData(0));
-        if (muted) return;
+        if (muted || transcribing) return;
         const level = rms(frame);
         h.onLevel(level);
         const wasSpeaking = vad.speaking;
@@ -139,7 +151,11 @@ export async function startMic(ctx: AudioContext, h: MicHandlers): Promise<{ sto
                 merged.set(f, o);
                 o += f.length;
             }
-            h.onSpeechEnd(encodeWav(merged, ctx.sampleRate));
+            // One decision at a time: a second noise must not resume playback
+            // while the first utterance is still awaiting transcription.
+            transcribing = true;
+            void Promise.resolve(h.onSpeechEnd(encodeWav(merged, ctx.sampleRate)))
+                .finally(() => { transcribing = false; });
         }
     };
     src.connect(proc);
@@ -166,7 +182,9 @@ export async function startMic(ctx: AudioContext, h: MicHandlers): Promise<{ sto
 /** Plays TTS clips strictly in order; fetching happens as soon as a clip is queued. */
 export class PlaybackQueue {
     #queue: { buf: Promise<AudioBuffer | null>; onPlay?: () => void }[] = [];
-    #current: AudioBufferSourceNode | null = null;
+    #stopCurrent: (() => void) | null = null;
+    #paused = false;
+    #wake: (() => void) | null = null;
     #gen = 0;
     #running = false;
     readonly analyser: AnalyserNode;
@@ -182,7 +200,23 @@ export class PlaybackQueue {
     }
 
     get playing() {
-        return this.#running;
+        return this.#running && !this.#paused;
+    }
+
+    /** Keep the current position and queued audio until speech is confirmed. */
+    pause() {
+        if (this.#paused) return;
+        this.#paused = true;
+        this.#stopCurrent?.();
+        this.onIdle();
+    }
+
+    resume() {
+        if (!this.#paused) return;
+        this.#paused = false;
+        this.#wake?.();
+        this.#wake = null;
+        if (this.#running) this.onStart();
     }
 
     /** `onPlay` fires when this clip actually starts (e.g. to sync captions). */
@@ -190,7 +224,10 @@ export class PlaybackQueue {
         const gen = this.#gen;
         const buf = fetchWav()
             .then((wav) => (gen === this.#gen ? this.ctx.decodeAudioData(wav) : null))
-            .catch(() => null);
+            .catch((err) => {
+                console.warn("[live-voice] TTS clip failed to fetch/decode; skipping", err);
+                return null;
+            });
         this.#queue.push({ buf, onPlay });
         if (!this.#running) void this.#drain();
     }
@@ -199,31 +236,49 @@ export class PlaybackQueue {
     clear() {
         this.#gen++;
         this.#queue = [];
-        try {
-            this.#current?.stop();
-        } catch {
-            /* already stopped */
-        }
+        this.#stopCurrent?.();
+        this.#paused = false;
+        this.#wake?.();
+        this.#wake = null;
     }
 
     async #drain() {
         this.#running = true;
-        this.onStart();
+        if (!this.#paused) this.onStart();
         while (this.#queue.length) {
             const gen = this.#gen;
             const item = this.#queue.shift()!;
             const buf = await item.buf;
             if (!buf || gen !== this.#gen) continue;
-            item.onPlay?.();
-            await new Promise<void>((resolve) => {
-                const node = this.ctx.createBufferSource();
-                node.buffer = buf;
-                node.connect(this.analyser);
-                node.onended = () => resolve();
-                this.#current = node;
-                node.start();
-            });
-            this.#current = null;
+            let offset = 0;
+            while (offset < buf.duration && gen === this.#gen) {
+                if (this.#paused) await new Promise<void>((resolve) => { this.#wake = resolve; });
+                if (gen !== this.#gen) break;
+                if (this.#paused) continue;
+                item.onPlay?.();
+                await new Promise<void>((resolve) => {
+                    const node = this.ctx.createBufferSource();
+                    node.buffer = buf;
+                    node.connect(this.analyser);
+                    const startedAt = this.ctx.currentTime;
+                    const finish = () => {
+                        node.onended = null;
+                        node.disconnect();
+                        this.#stopCurrent = null;
+                        resolve();
+                    };
+                    node.onended = () => { offset = buf.duration; finish(); };
+                    this.#stopCurrent = () => {
+                        offset = Math.min(buf.duration, offset + this.ctx.currentTime - startedAt);
+                        // Resolve synchronously: resume may arrive before the
+                        // browser delivers the stopped source's ended event.
+                        node.onended = null;
+                        node.stop();
+                        finish();
+                    };
+                    node.start(0, offset);
+                });
+            }
         }
         this.#running = false;
         this.onIdle();

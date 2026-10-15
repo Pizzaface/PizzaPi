@@ -74,6 +74,7 @@ import {
   AudioLines,
 } from "lucide-react";
 import { LiveOverlay } from "@/components/session-viewer/LiveOverlay";
+import { requestMicrophone } from "@/lib/live-voice/audio";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
 import { PluginCommandContext, PluginResultCountContext, type PluginCommandHandler } from "@/components/plugins/plugins-data";
@@ -215,8 +216,16 @@ export function SessionViewer({
   const [composerError, setComposerError] = React.useState<string | null>(null);
   // Non-null while the Live voice overlay is open; the context is unlocked by the Live tap.
   const [liveAudioContext, setLiveAudioContext] = React.useState<AudioContext | null>(null);
+  const [liveMicStream, setLiveMicStream] = React.useState<Promise<MediaStream> | null>(null);
+  const closeLive = React.useCallback(() => {
+    setLiveAudioContext(null);
+    setLiveMicStream(null);
+  }, []);
   // Live is per session: switching sessions ends the call.
-  React.useEffect(() => () => setLiveAudioContext(null), [sessionId]);
+  React.useEffect(() => () => {
+    setLiveAudioContext(null);
+    setLiveMicStream(null);
+  }, [sessionId]);
   // True when the session has been stuck hydrating ("Connecting…"/"Loading
   // session…") long enough that the disabled composer needs an explanation.
   const [hydrationStuck, setHydrationStuck] = React.useState(false);
@@ -2018,9 +2027,16 @@ export function SessionViewer({
                     <button
                       type="button"
                       onClick={() => {
-                        // Create + resume inside the tap: iOS only unlocks audio in a user gesture.
+                        // Acquire the mic inside the tap; mobile browsers may reject a
+                        // permission request made later by the model-loading effect.
                         const ctx = new AudioContext();
                         void ctx.resume();
+                        const stream = requestMicrophone().then((s) => {
+                          for (const track of s.getAudioTracks()) track.enabled = false;
+                          return s;
+                        });
+                        void stream.catch(() => {}); // the overlay observes and displays the rejection
+                        setLiveMicStream(stream);
                         setLiveAudioContext(ctx);
                       }}
                       disabled={!composerReady}
@@ -2038,17 +2054,19 @@ export function SessionViewer({
             </PromptInput>
           </div>
 
-          {liveAudioContext && sessionId && livePort != null && (
+          {liveAudioContext && liveMicStream && sessionId && livePort != null && (
             <LiveOverlay
               audioContext={liveAudioContext}
+              micStream={liveMicStream}
               sessionId={sessionId}
               sessionName={sessionName ?? undefined}
               runnerId={runnerId}
               port={livePort}
               messages={messages}
+              activeToolCalls={activeToolCalls}
               agentActive={!!agentActive}
               send={(text, steer) => onSendInput?.({ text, files: [], deliverAs: steer ? "steer" : "followUp" }) ?? false}
-              onClose={() => setLiveAudioContext(null)}
+              onClose={closeLive}
             />
           )}
 

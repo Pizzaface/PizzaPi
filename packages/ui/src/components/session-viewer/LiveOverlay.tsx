@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Mic, MicOff, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLiveVoice, type LivePhase, type LiveVoiceOptions } from "@/lib/live-voice/useLiveVoice";
+import { describeActiveTools } from "@/lib/live-voice/tool-activity";
 
 const PHASE_LABEL: Record<LivePhase, string> = {
     starting: "",
@@ -38,6 +39,7 @@ export function LiveOverlay({ onClose, sessionName, ...opts }: LiveVoiceOptions 
     }, [onClose]);
 
     const label = live.phase === "starting" ? live.status : live.muted ? "Muted" : PHASE_LABEL[live.phase];
+    const activeWork = live.phase === "thinking" ? describeActiveTools(opts.activeToolCalls?.values() ?? []) : null;
 
     return createPortal(
         <div
@@ -73,6 +75,7 @@ export function LiveOverlay({ onClose, sessionName, ...opts }: LiveVoiceOptions 
 
                 <div className="flex min-h-28 w-full max-w-md flex-col items-center gap-3 text-center" aria-live="polite">
                     <p className="text-sm font-medium text-muted-foreground">{label}</p>
+                    {activeWork && <p className="text-xs text-muted-foreground">{activeWork}</p>}
                     {live.error ? (
                         <p className="text-sm text-destructive">{live.error}</p>
                     ) : (

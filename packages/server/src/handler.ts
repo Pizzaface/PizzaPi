@@ -206,12 +206,12 @@ export function withSecurityHeaders(res: Response): Response {
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("X-XSS-Protection", "0");
     headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-    // Hardened default — but a tunneled service may declare its own
-    // Permissions-Policy (e.g. the daily report needs `microphone=self` for
-    // voice feedback). Origin-provided policy wins; the restrictive default
-    // still covers the relay's own surfaces and every origin that stays silent.
+    // A tunneled service may declare its own Permissions-Policy, but the app
+    // also needs first-party mic access for Live voice. Cross-origin iframe
+    // delegation still requires its explicit `allow="microphone"` attribute.
+    // Keep camera and geolocation disabled. Origin-provided policy wins.
     if (!headers.has("Permissions-Policy")) {
-        headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+        headers.set("Permissions-Policy", "camera=(), microphone=*, geolocation=()");
     }
 
     if (isTunnel) {
