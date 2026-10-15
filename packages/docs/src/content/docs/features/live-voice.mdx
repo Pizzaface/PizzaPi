@@ -13,7 +13,7 @@ Speech runs locally on the runner with open-source models. Nothing leaves your m
 |------|-------|---------------|
 | Speech-to-text | [Moonshine base](https://huggingface.co/onnx-community/moonshine-base-ONNX) (MIT) | Runner |
 | Text-to-speech | [Kokoro 82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) (Apache-2.0) | Runner |
-| Voice detection | Adaptive energy detector with the browser's echo cancellation | Browser |
+| Voice detection | Silero v6 speech detector with the browser's echo cancellation | Browser |
 
 ## Install
 
@@ -36,11 +36,11 @@ Live ships as the `@pizzapi/live` package in `packages/live`. It runs a daemon s
 
 Tap the waveform button next to the attachment button in the composer. The button only appears when the session's runner has the `live` service.
 
-- **Talk** whenever the orb says *Listening*. A pause of about 0.8 s ends your turn.
-- **Interrupt** by talking over the agent. Playback stops right away, and what you say steers the agent if it is still working.
+- **Talk** whenever the orb says *Listening*. About half a second without detected speech ends your turn.
+- **Interrupt** by talking over the agent. The detector waits for roughly 160 ms of speech-positive audio before pausing playback. Short false starts and non-speech sounds should leave playback alone. Empty transcription resumes the paused sentence; recognized speech replaces it and steers the agent if it is still working.
 - **Mute** stops the microphone. **End** (the red button or <kbd>Esc</kbd>) closes the chat.
 
-What you say is sent to the session as a normal message, so it appears in the transcript. Reply sentences are spoken as they stream in. Code blocks, tables and links stay on screen and are not read aloud.
+What you say is sent to the session as a normal message, so it appears in the transcript. Reply sentences are spoken as they stream in. Extra silence at the edges of synthesized clips is shortened, retaining 80 ms on each edge so sentence boundaries do not accumulate long pauses. Code blocks, tables and links stay on screen and are not read aloud.
 
 While Live is open, the session's agent is told that it's in a spoken conversation: keep replies short, lead with the answer, and summarize instead of reading code or output. The hint is removed when the chat ends, or two minutes after the last heartbeat if the browser disappears.
 
@@ -50,6 +50,7 @@ The bundled iOS and Android apps request microphone permission the first time yo
 
 ## Limits
 
-- Voice detection is energy-based. It works well in a normal room with echo cancellation. In loud places or on speakerphone it can pick up background noise or the agent's own voice. Use a headset or mute between turns.
+- The speech detector and its WASM runtime load from your PizzaPi UI server (about 13 MB on first use), not a third-party CDN. Live shows *Loading speech detector…* until it is ready; a load failure is shown rather than silently falling back to volume-only detection.
+- Speech detection is probabilistic, not a guarantee that every cough or throat-clear is rejected. Speakerphone echo and background speech can still trigger it. Use a headset or mute when needed.
 - Turns are sent as complete utterances, not streamed audio, so expect about 0.3 s for transcription plus the model's first-token time before the first spoken sentence.
 - Text-to-speech runs on the runner's CPU at roughly 0.4× real time on Apple silicon. Slower machines start speaking later.

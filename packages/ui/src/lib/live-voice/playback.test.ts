@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { PlaybackQueue } from "./audio";
+import { playbackBounds, PlaybackQueue } from "./audio";
 
 function setup() {
     const sources: Array<{ buffer: AudioBuffer | null; onended: (() => void) | null; offset: number; connect(): void; disconnect(): void; start(when?: number, offset?: number): void; stop(): void }> = [];
@@ -7,7 +7,7 @@ function setup() {
         currentTime: 0,
         destination: {},
         createAnalyser: () => ({ connect() {}, fftSize: 256 }),
-        decodeAudioData: async () => ({ duration: 10 }) as AudioBuffer,
+        decodeAudioData: async () => ({ duration: 10, length: 1000, sampleRate: 100, numberOfChannels: 1, getChannelData: () => new Float32Array(1000).fill(0.1) }) as AudioBuffer,
         createBufferSource: () => {
             const source = {
                 buffer: null as AudioBuffer | null,
@@ -25,6 +25,16 @@ function setup() {
 }
 const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 const wav = async () => new ArrayBuffer(1);
+
+test("sentence playback trims model padding but retains a short natural pause", () => {
+    const samples = new Float32Array(2000);
+    samples.fill(0.1, 320, 1580);
+    const buffer = { length: samples.length, duration: 2, sampleRate: 1000, numberOfChannels: 1, getChannelData: () => samples } as unknown as AudioBuffer;
+    expect(playbackBounds(buffer).start).toBeCloseTo(0.24);
+    expect(playbackBounds(buffer).end).toBeCloseTo(1.66);
+    samples.fill(0);
+    expect(playbackBounds(buffer)).toEqual({ start: 0, end: 0 });
+});
 
 test("false interruption resumes current clip at its offset and preserves queued clips", async () => {
     const { ctx, sources, queue } = setup();
