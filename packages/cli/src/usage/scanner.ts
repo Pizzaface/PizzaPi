@@ -10,6 +10,9 @@ import { GOAL_EVALUATOR_USAGE_CUSTOM_TYPE } from "../extensions/goal/state.js";
 
 const log = createLogger("usage");
 
+/** Negative costs come from OpenRouter's "-1" (variable) pricing sentinel — treat as unknown. */
+const cost = (v: unknown): number | null => (typeof v === "number" && v >= 0 ? v : null);
+
 export interface ParsedSessionHeader extends SessionHeader {}
 
 /**
@@ -178,11 +181,11 @@ export function processFile(
         output_tokens: usage.output || 0,
         cache_read_tokens: usage.cacheRead || 0,
         cache_write_tokens: usage.cacheWrite || 0,
-        cost_usd: usage.cost?.total ?? null,
-        cost_input: usage.cost?.input ?? null,
-        cost_output: usage.cost?.output ?? null,
-        cost_cache_read: usage.cost?.cacheRead ?? null,
-        cost_cache_write: usage.cost?.cacheWrite ?? null,
+        cost_usd: cost(usage.cost?.total),
+        cost_input: cost(usage.cost?.input),
+        cost_output: cost(usage.cost?.output),
+        cost_cache_read: cost(usage.cost?.cacheRead),
+        cost_cache_write: cost(usage.cost?.cacheWrite),
       });
     } else if (obj.type === "custom" && obj.customType === GOAL_EVALUATOR_USAGE_CUSTOM_TYPE) {
       // /goal LLM evaluator calls are separate API requests outside the
@@ -201,9 +204,9 @@ export function processFile(
         output_tokens: data.tokens || 0,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
-        cost_usd: data.cost ?? null,
+        cost_usd: cost(data.cost),
         cost_input: null,
-        cost_output: data.cost ?? null,
+        cost_output: cost(data.cost),
         cost_cache_read: null,
         cost_cache_write: null,
       });

@@ -458,3 +458,20 @@ describe("Scanner", () => {
     db.close();
   });
 });
+
+describe("negative cost sentinel", () => {
+  test("negative costs (OpenRouter -1 pricing) are stored as unknown", () => {
+    const dir = mkdtempSync(join(require("node:os").tmpdir(), "neg-cost-"));
+    const db = openUsageDb(join(dir, "u.db"));
+    const header = { type: "session", id: "s1", cwd: "/p", timestamp: new Date().toISOString() };
+    const line = { type: "message", timestamp: new Date().toISOString(), message: { role: "assistant", provider: "openrouter", model: "x/router",
+      usage: { input: 100, output: 5, cacheRead: 0, cacheWrite: 0, cost: { input: -100, output: -5, cacheRead: 0, cacheWrite: 0, total: -105 } } } };
+    const content = JSON.stringify(header) + "\n" + JSON.stringify(line) + "\n";
+    const file = join(dir, "s.jsonl");
+    writeFileSync(file, content);
+    processFile(db, file, "s.jsonl", header as any, content);
+    const ev = db.query("SELECT cost_usd, cost_input, input_tokens FROM usage_events").get() as any;
+    expect(ev).toEqual({ cost_usd: null, cost_input: null, input_tokens: 100 });
+    expect((db.query("SELECT total_cost FROM sessions").get() as any).total_cost).toBeNull();
+  });
+});

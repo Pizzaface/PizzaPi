@@ -59,6 +59,7 @@ describe("live flag", () => {
         expect(handler!({ systemPrompt: "base" })).toBeUndefined();
         setLive("s2", true, home);
         expect(handler!({ systemPrompt: "base" })?.systemPrompt).toBe(`base${VOICE_PROMPT}`);
+        expect(VOICE_PROMPT).toContain("short spoken progress updates at meaningful milestones");
         setLive("s2", false, home);
     });
     test("rejects path traversal ids", () => {

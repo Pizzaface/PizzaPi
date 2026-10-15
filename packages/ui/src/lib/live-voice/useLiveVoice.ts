@@ -2,17 +2,21 @@ import * as React from "react";
 import { resolveTunnelTarget } from "@/hooks/useTunnelSrc";
 import { PlaybackQueue, startMic } from "./audio";
 import { replyText, SpeechChunker } from "./speech";
+import { fetchTunnelWithFallback } from "./tunnel-fetch";
 
 export type LivePhase = "starting" | "listening" | "hearing" | "transcribing" | "thinking" | "speaking" | "error";
 
 export interface LiveVoiceOptions {
     /** Unlocked in the Live button's click handler (iOS requires a user gesture). */
     audioContext: AudioContext;
+    /** Requested synchronously from the Live button tap for mobile browser permission gating. */
+    micStream: Promise<MediaStream>;
     sessionId: string;
     runnerId?: string;
     /** Port of the runner's `live` service. */
     port: number;
     messages: ReadonlyArray<{ role: string; content?: unknown }>;
+    activeToolCalls?: ReadonlyMap<string, string>;
     agentActive: boolean;
     send(text: string, steer: boolean): Promise<boolean> | boolean;
     voice?: string;
@@ -35,6 +39,7 @@ const HEARTBEAT_MS = 30_000;
 
 export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const [base, setBase] = React.useState<URL | null>(null);
+    const [fallbackBase, setFallbackBase] = React.useState<URL | null>(null);
     const [ready, setReady] = React.useState(false);
     const [status, setStatus] = React.useState("Connecting…");
     const [error, setError] = React.useState<string | null>(null);
@@ -51,19 +56,49 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     live.current = o;
     const queueRef = React.useRef<PlaybackQueue | null>(null);
     const micRef = React.useRef<Awaited<ReturnType<typeof startMic>> | null>(null);
+    const micStreamRef = React.useRef<MediaStream | null>(null);
     const chunkerRef = React.useRef<SpeechChunker | null>(null);
-    const silencedRef = React.useRef(false);
+
+    // Permission is requested by the Live button's click handler. Observe the
+    // result now, and stop the stream if the overlay closes before models load.
+    React.useEffect(() => {
+        let active = true;
+        void o.micStream.then(
+            (stream) => {
+                if (!active) {
+                    for (const track of stream.getTracks()) track.stop();
+                    return;
+                }
+                micStreamRef.current = stream;
+            },
+            (e: unknown) => {
+                if (active) setError(e instanceof DOMException && e.name === "NotAllowedError" ? "Microphone access was denied." : String(e));
+            },
+        );
+        return () => {
+            active = false;
+            for (const track of micStreamRef.current?.getTracks() ?? []) track.stop();
+            micStreamRef.current = null;
+        };
+    }, [o.micStream]);
 
     // 1. Resolve the tunnel to the live service.
     React.useEffect(() => {
         const ac = new AbortController();
         resolveTunnelTarget({ sessionId: o.sessionId, runnerId: o.runnerId, port: o.port }, ac.signal)
-            .then(({ href }) => setBase(new URL(href.endsWith("/") ? href : `${href}/`, window.location.href)))
+            .then(({ href, fallbackHref }) => {
+                setBase(new URL(href.endsWith("/") ? href : `${href}/`, window.location.href));
+                setFallbackBase(fallbackHref ? new URL(fallbackHref.endsWith("/") ? fallbackHref : `${fallbackHref}/`, window.location.href) : null);
+            })
             .catch((e: unknown) => !ac.signal.aborted && setError(`Can't reach the voice service: ${e instanceof Error ? e.message : e}`));
         return () => ac.abort();
     }, [o.sessionId, o.runnerId, o.port]);
 
-    const api = React.useCallback((path: string, init?: RequestInit) => fetch(new URL(path, base!), init), [base]);
+    const api = React.useCallback(
+        (path: string, init?: RequestInit) =>
+            fetchTunnelWithFallback(new URL(path, base!), fallbackBase ? new URL(path, fallbackBase) : null, init),
+        [base, fallbackBase],
+    );
 
     // 2. Load models, mark the session live (heartbeat), open the mic.
     React.useEffect(() => {
@@ -131,7 +166,6 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         );
         queueRef.current = queue;
         let stopped = false;
-        let silencedBeforeBargeIn = false;
 
         startMic(ctx, {
             isPlaying: () => queue.playing,
@@ -140,14 +174,13 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
             },
             onSpeechStart: () => {
                 setHearing(true);
-                // Barge-in: the user talking always wins over the agent talking.
-                silencedBeforeBargeIn = silencedRef.current;
-                silencedRef.current = true;
-                queue.clear();
+                // Noise is only a candidate interruption. Preserve audio until
+                // transcription confirms that the user actually said something.
+                queue.pause();
             },
             onDiscard: () => {
                 setHearing(false);
-                silencedRef.current = silencedBeforeBargeIn;
+                queue.resume();
             },
             onSpeechEnd: async (wav) => {
                 setHearing(false);
@@ -156,23 +189,27 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                     const r = await api("api/stt", { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav });
                     const { text, error: err } = (await r.json()) as { text?: string; error?: string };
                     if (!r.ok) throw new Error(err ?? `stt ${r.status}`);
-                    if (!text) {
-                        silencedRef.current = silencedBeforeBargeIn;
+                    if (stopped) return;
+                    if (!text?.trim()) {
+                        queue.resume();
                         return;
                     }
+                    queue.clear();
                     setUserCaption(text);
                     setAgentCaption("");
-                    silencedRef.current = false;
                     // Don't hold the "transcribing" phase open for the delivery ack.
                     setTranscribing(false);
                     if (!(await live.current.send(text, live.current.agentActive))) setUserCaption(`${text} (not sent)`);
                 } catch (e) {
-                    setError(e instanceof Error ? e.message : String(e));
+                    if (!stopped) {
+                        queue.resume();
+                        setError(e instanceof Error ? e.message : String(e));
+                    }
                 } finally {
-                    setTranscribing(false);
+                    if (!stopped) setTranscribing(false);
                 }
             },
-        }).then(
+        }, o.micStream).then(
             (mic) => {
                 if (stopped) mic.stop();
                 else micRef.current = mic;
@@ -206,9 +243,9 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
             chunkerRef.current.flush(text);
             return;
         }
+        if (!ready) return;
         const c = chunkerRef.current;
         const sentences = o.agentActive ? c.push(text) : [...c.push(text), ...c.flush(text)];
-        if (!ready || silencedRef.current) return;
         for (const s of sentences) speak(s);
     }, [o.messages, o.agentActive, ready, speak]);
 

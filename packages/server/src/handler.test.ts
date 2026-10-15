@@ -298,9 +298,9 @@ describe("withSecurityHeaders", () => {
         expect(res.headers.get("permissions-policy")).toBe("microphone=self");
     });
 
-    test("defaults to the restrictive policy when the origin declares none", () => {
+    test("allows first-party microphone use while keeping camera and geolocation disabled", () => {
         const res = withSecurityHeaders(new Response("ok"));
-        expect(res.headers.get("permissions-policy")).toBe("camera=(), microphone=(), geolocation=()");
+        expect(res.headers.get("permissions-policy")).toBe("camera=(), microphone=*, geolocation=()");
     });
 
     test("injects X-Frame-Options: DENY", () => {
