@@ -1,8 +1,8 @@
 diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
-index 106f2b9..5384db5 100644
+index d0a5b0f..74330fa 100644
 --- a/dist/api/anthropic-messages.js
 +++ b/dist/api/anthropic-messages.js
-@@ -520,6 +520,29 @@ export const stream = (model, context, options) => {
+@@ -552,6 +552,29 @@ export const stream = (model, context, options) => {
                          output.content.push(block);
                          stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
                      }
@@ -32,7 +32,7 @@ index 106f2b9..5384db5 100644
                  }
                  else if (event.type === "content_block_delta") {
                      if (event.delta.type === "text_delta") {
-@@ -561,6 +584,10 @@ export const stream = (model, context, options) => {
+@@ -593,6 +616,10 @@ export const stream = (model, context, options) => {
                                  partial: output,
                              });
                          }
@@ -43,7 +43,7 @@ index 106f2b9..5384db5 100644
                      }
                      else if (event.delta.type === "signature_delta") {
                          const index = blocks.findIndex((b) => b.index === event.index);
-@@ -577,6 +604,16 @@ export const stream = (model, context, options) => {
+@@ -609,6 +636,16 @@ export const stream = (model, context, options) => {
                      if (block) {
                          delete block.index;
                          if (block.type === "text") {
@@ -60,8 +60,8 @@ index 106f2b9..5384db5 100644
                              stream.push({
                                  type: "text_end",
                                  contentIndex: index,
-@@ -936,6 +973,22 @@ function buildParams(model, context, isOAuthToken, options) {
-             params.tools = convertTools(tools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools, toolCacheControl);
+@@ -971,6 +1008,22 @@ function buildParams(model, context, isOAuthToken, options, disablePreferredStri
+             params.tools = convertToolDefinitions(tools, toolCacheControl);
          }
      }
 +    // PATCH(pizzapi): inject Anthropic web search tool when PIZZAPI_WEB_SEARCH is set
@@ -83,7 +83,7 @@ index 106f2b9..5384db5 100644
      // Managed effort models always use adaptive thinking so prefix mismatches can
      // be dropped instead of surfacing as persistent 400 responses.
      if (model.compat?.supportsMidConvoEffort === true) {
-@@ -1088,7 +1141,23 @@ function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowE
+@@ -1127,7 +1180,23 @@ convertToolDefinitions) {
              flushPendingSystemMessages();
              const blocks = [];
              for (const block of msg.content) {
@@ -108,7 +108,7 @@ index 106f2b9..5384db5 100644
                      if (block.text.trim().length === 0)
                          continue;
                      blocks.push({
-@@ -1258,6 +1327,10 @@ function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, supp
+@@ -1297,6 +1366,10 @@ function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, supp
      if (!tools)
          return [];
      return tools.map((tool, index) => {
@@ -116,9 +116,9 @@ index 106f2b9..5384db5 100644
 +        if (tool.type && typeof tool.type === "string") {
 +            return tool;
 +        }
-         const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools, isAnthropicStrictUnsupportedKeyword);
-         const parameters = getJsonSchemaToolParameters(tool, strict);
-         const schema = parameters;
+         const config = tool.constrainedSampling;
+         const strict = disablePreferredStrictTools && config && config.type === "json_schema" && config.strict === "prefer"
+             ? undefined
 diff --git a/dist/api/openai-responses-shared.js b/dist/api/openai-responses-shared.js
 index f413fe5..b261d9f 100644
 --- a/dist/api/openai-responses-shared.js
@@ -164,10 +164,10 @@ index f413fe5..b261d9f 100644
              const slot = getOrCreateSlot(event.output_index, item);
              if (item.type === "reasoning" && slot?.type === "thinking") {
 diff --git a/dist/auth/oauth/anthropic.js b/dist/auth/oauth/anthropic.js
-index e136a75..0f51abf 100644
+index 0823512..9bcd574 100644
 --- a/dist/auth/oauth/anthropic.js
 +++ b/dist/auth/oauth/anthropic.js
-@@ -221,6 +221,37 @@ async function refreshAnthropicToken(refreshToken, signal) {
+@@ -229,6 +229,37 @@ async function refreshAnthropicToken(refreshToken, signal) {
          expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
      };
  }
@@ -205,7 +205,7 @@ index e136a75..0f51abf 100644
  export const anthropicOAuth = {
      name: "Anthropic (Claude Pro/Max)",
      isSubscription: true,
-@@ -241,7 +272,14 @@ export const anthropicOAuth = {
+@@ -249,7 +280,14 @@ export const anthropicOAuth = {
          }
          return loginAnthropic(interaction);
      },
@@ -222,13 +222,13 @@ index e136a75..0f51abf 100644
          return { apiKey: credential.access };
      },
 diff --git a/dist/utils/retry.js b/dist/utils/retry.js
-index 38781fb..de73040 100644
+index a0e9b83..db7b650 100644
 --- a/dist/utils/retry.js
 +++ b/dist/utils/retry.js
-@@ -69,6 +69,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
-     "stream ended before message_stop",
-     "stream ended before a terminal response event",
-     "http2 request did not get a response",
+@@ -76,6 +76,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
+     // Node ERR_HTTP2_STREAM_CANCEL: the HTTP/2 session died before the request was
+     // sent, e.g. after the Bedrock SDK's 5-minute session timeout (#10379).
+     "pending stream has been canceled",
 +    // PATCH(pizzapi): retry transient JSON parse failures from truncated provider streams.
 +    "json.?parse.?error",
 +    "unexpected.?end.?of.?json",

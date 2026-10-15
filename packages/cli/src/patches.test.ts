@@ -205,7 +205,10 @@ describe("pi-coding-agent patch application", () => {
         // The undefined-only default keeps an explicit `quietStartup: false` in
         // settings.json working as an opt back in.
         const getter = source.slice(source.indexOf("getQuietStartup()"));
-        expect(getter.slice(0, 800)).toContain("value === true || value === \"header\" ? value : false");
+        // pi 1.2 falls back to SETTINGS_DEFAULTS.quietStartup (false) instead of a literal.
+        expect(getter.slice(0, 800)).toMatch(
+            /value === true \|\| value === "header" \? value : (false|SETTINGS_DEFAULTS\.quietStartup)/,
+        );
     });
 
     test("config.js: CONFIG_DIR_NAME is overridden to .pizzapi", async () => {

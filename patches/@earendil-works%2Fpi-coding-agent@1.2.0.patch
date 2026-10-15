@@ -1,8 +1,8 @@
 diff --git a/dist/config.js b/dist/config.js
-index 7245e21..4f2e55e 100644
+index 62eb303..6aa5b50 100644
 --- a/dist/config.js
 +++ b/dist/config.js
-@@ -368,6 +368,10 @@ export function getExamplesPath() {
+@@ -371,6 +371,10 @@ export function getExamplesPath() {
  }
  /** Get path to CHANGELOG.md */
  export function getChangelogPath() {
@@ -13,7 +13,7 @@ index 7245e21..4f2e55e 100644
      return resolve(join(getPackageDir(), "CHANGELOG.md"));
  }
  /**
-@@ -429,7 +433,7 @@ const piConfigName = pkg.piConfig?.name;
+@@ -470,7 +474,7 @@ const piConfigName = pkg.piConfig?.name;
  export const PACKAGE_NAME = pkg.name || "@earendil-works/pi-coding-agent";
  export const APP_NAME = piConfigName || "pi";
  export const APP_TITLE = piConfigName ? APP_NAME : "π";
@@ -22,7 +22,7 @@ index 7245e21..4f2e55e 100644
  export const VERSION = pkg.version || "0.0.0";
  // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
  export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
-@@ -452,7 +456,8 @@ export function getAgentDir() {
+@@ -493,7 +497,8 @@ export function getAgentDir() {
      if (envDir) {
          return expandTildePath(envDir);
      }
@@ -33,10 +33,10 @@ index 7245e21..4f2e55e 100644
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 1da213f..3d6b891 100644
+index c16f5da..b8f47e7 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -1627,29 +1627,46 @@ export class AgentSession {
+@@ -1695,29 +1695,46 @@ export class AgentSession {
       * Emits errors via extension runner if file read fails.
       */
      _expandSkillCommand(text) {
@@ -107,7 +107,7 @@ index 1da213f..3d6b891 100644
      async _queueUserInput(text, images, behavior, source) {
          if (text.startsWith("/")) {
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index f3869e2..3a9b74e 100644
+index 7543601..987e41c 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -21,6 +21,7 @@ export const defaultModelPerProvider = {
@@ -119,10 +119,10 @@ index f3869e2..3a9b74e 100644
      xai: "grok-4.7",
      groq: "openai/gpt-oss-120b",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index 1fa738d..b94588a 100644
+index 835de97..45df4d4 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
-@@ -24,6 +24,51 @@ export class CredentialSynchronizationError extends Error {
+@@ -25,6 +25,51 @@ export class CredentialSynchronizationError extends Error {
          this.credential = credential;
      }
  }
@@ -174,7 +174,7 @@ index 1fa738d..b94588a 100644
  function mergeHeaders(base, override) {
      if (!base && !override)
          return undefined;
-@@ -149,7 +194,7 @@ export class ModelRuntime {
+@@ -154,7 +199,7 @@ export class ModelRuntime {
      }
      /** The provider without virtual models, or undefined when nothing defines it. */
      composeProvider(providerId) {
@@ -184,10 +184,10 @@ index 1fa738d..b94588a 100644
          if (!this.config.getProvider(providerId) && !extension) {
              // No overlays: use the builtin untouched so its auth/login/stream behavior is exact.
 diff --git a/dist/core/settings-manager.js b/dist/core/settings-manager.js
-index 3cf1268..e868d6c 100644
+index 392823f..259abff 100644
 --- a/dist/core/settings-manager.js
 +++ b/dist/core/settings-manager.js
-@@ -732,7 +732,14 @@ export class SettingsManager {
+@@ -756,7 +756,14 @@ export class SettingsManager {
          this.save();
      }
      getQuietStartup() {
@@ -199,11 +199,11 @@ index 3cf1268..e868d6c 100644
          const value = this.settings.quietStartup;
 +        if (value === undefined)
 +            return true;
-         return value === true || value === "header" ? value : false;
+         return value === true || value === "header" ? value : SETTINGS_DEFAULTS.quietStartup;
      }
      setQuietStartup(quiet) {
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index eda1c08..e9cb062 100644
+index 4a4e958..683f720 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -15,6 +15,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
@@ -227,10 +227,10 @@ index c48934f..4adfbc1 100644
  // SDK for programmatic usage
  export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 3a9ad25..29d748a 100644
+index 6a5b925..6983e62 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -827,12 +827,6 @@ export class InteractiveMode {
+@@ -835,12 +835,6 @@ export class InteractiveMode {
                  .catch(() => { })
                  .finally(() => clearTimeout(timeout));
          }
@@ -243,7 +243,7 @@ index 3a9ad25..29d748a 100644
          // Start package update check asynchronously
          this.checkForPackageUpdates()
              .then((updates) => {
-@@ -3728,34 +3722,10 @@ export class InteractiveMode {
+@@ -3801,34 +3795,10 @@ export class InteractiveMode {
          this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -280,7 +280,7 @@ index 3a9ad25..29d748a 100644
          const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
          this.chatContainer.addChild(new Spacer(1));
          this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
-@@ -3799,6 +3769,12 @@ export class InteractiveMode {
+@@ -3872,6 +3842,12 @@ export class InteractiveMode {
      }
      updatePendingMessagesDisplay() {
          this.pendingMessagesContainer.clear();
