@@ -84,6 +84,8 @@ export function getPidStartTime(pid: number): string | null {
             return null;
         }
     }
+    // Windows has no BSD ps (Git's MSYS ps rejects -o and spams stderr).
+    if (process.platform === "win32") return null;
     try {
         // macOS/BSD: wall-clock process start time (ticks-since-boot isn't
         // exposed the same way, but lstart is equally stable across reuse).

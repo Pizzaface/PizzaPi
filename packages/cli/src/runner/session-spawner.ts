@@ -494,7 +494,10 @@ export function spawnSession(
         // New process group (PGID = worker PID).  Everything the session spawns
         // (bash commands, MCP stdio servers, dev servers) inherits the group, so
         // we can enumerate it (pgrep -g) and kill it wholesale on session end.
-        detached: true,
+        // Not on Windows: there are no process groups (tree kill is taskkill /T),
+        // and a detached child loses the console its inherited stdio points at,
+        // so its first log write kills it with exit code 1 before startup.
+        detached: process.platform !== "win32",
         // Include an IPC channel (fd[3]) so the worker can send a "pre_restart"
         // message to the daemon before calling process.exit(43).  This lets us
         // add the sessionId to restartingSessions *before* the process exits and
