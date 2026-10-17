@@ -109,3 +109,38 @@ for (const utterance of ["noise", "discard", "empty", "real", "mute", "failure"]
         }
     });
 }
+
+test("Live speaks the sentence before a tool call without waiting for more text", async () => {
+    const spoken: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/tunnel-token")) return Response.json({ url: "/api/tunnel/auth/test/" });
+        if (url.endsWith("/api/status")) return Response.json({ stt: "ready", tts: "ready" });
+        if (url.endsWith("/api/tts")) {
+            spoken.push(JSON.parse(String(init?.body)).text);
+            return new Response(new ArrayBuffer(1));
+        }
+        return Response.json({});
+    }) as typeof fetch;
+    globalThis.requestAnimationFrame = () => 1;
+    globalThis.cancelAnimationFrame = () => {};
+    const node = () => ({ connect() { return this; }, disconnect() {}, gain: { value: 0 }, fftSize: 256, onaudioprocess: null });
+    const ctx = {
+        sampleRate: 16000, currentTime: 0, destination: {}, close: async () => {},
+        createAnalyser: node, createMediaStreamSource: node, createScriptProcessor: node, createGain: node,
+        decodeAudioData: async () => ({ duration: 1, length: 100, sampleRate: 100, numberOfChannels: 1, getChannelData: () => new Float32Array(100).fill(0.1) }),
+        createBufferSource: () => ({ connect() {}, disconnect() {}, start() {}, stop() {}, onended: null }),
+    };
+    const stream = Promise.resolve({ getAudioTracks: () => [], getTracks: () => [] } as unknown as MediaStream);
+    const { rerender } = renderHook(({ text, tools }) => useLiveVoice({
+        audioContext: ctx as unknown as AudioContext, micStream: stream,
+        sessionId: "test", port: 1234, agentActive: true, activeToolCalls: tools,
+        messages: [{ role: "assistant", content: text }],
+        send: () => true,
+    }), { initialProps: { text: "", tools: new Map<string, string>() } });
+    await act(settle);
+    await act(async () => { rerender({ text: "Running the build now.", tools: new Map() }); await settle(); });
+    expect(spoken).toEqual([]);
+    await act(async () => { rerender({ text: "Running the build now.", tools: new Map([["t1", "bash"]]) }); await settle(); });
+    expect(spoken).toEqual(["Running the build now."]);
+});

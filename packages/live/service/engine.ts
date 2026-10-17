@@ -10,6 +10,15 @@ export const TTS_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
 export const DEFAULT_VOICE = "af_heart";
 export const MODELS_DIR = join(homedir(), ".pizzapi", "live", "models");
 
+/**
+ * Whisper labels non-speech instead of inventing words: "(coughing)", "[BLANK_AUDIO]",
+ * "*sigh*", "♪". Drop those so a cough is an empty transcript, which Live ignores.
+ */
+export function stripNonSpeech(text: string): string {
+    const t = text.replace(/\([^)]*\)|\[[^\]]*\]|\*[^*]*\*|[♪♫]/g, " ").replace(/\s+/g, " ").trim();
+    return /[\p{L}\p{N}]/u.test(t) ? t : "";
+}
+
 export type ModelState = "idle" | "loading" | "ready" | "error";
 
 export interface EngineStatus {
@@ -49,8 +58,7 @@ export class SpeechEngine {
         const stt = await this.#loadStt();
         return this.#enqueue("stt", async () => {
             const r = await stt(samples16k);
-            const text = Array.isArray(r) ? r.map((x) => x.text).join(" ") : r.text;
-            return text.trim();
+            return stripNonSpeech(Array.isArray(r) ? r.map((x) => x.text).join(" ") : r.text);
         });
     }
 
