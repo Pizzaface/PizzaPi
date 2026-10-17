@@ -1,6 +1,6 @@
 /**
- * Browser audio for Live mode: mic capture with a voice-activity detector,
- * WAV encoding for upload, and an ordered playback queue for TTS replies.
+ * Browser audio for Live mode: mic capture with a voice-activity detector that
+ * streams utterance audio as it is spoken, and an ordered playback queue for TTS replies.
  */
 
 export function rms(frame: Float32Array): number {
@@ -9,34 +9,22 @@ export function rms(frame: Float32Array): number {
     return Math.sqrt(s / frame.length);
 }
 
-/** Mono PCM16 WAV. */
-export function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
-    const buf = new ArrayBuffer(44 + samples.length * 2);
-    const v = new DataView(buf);
-    const str = (o: number, s: string) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-    str(0, "RIFF");
-    v.setUint32(4, 36 + samples.length * 2, true);
-    str(8, "WAVE");
-    str(12, "fmt ");
-    v.setUint32(16, 16, true);
-    v.setUint16(20, 1, true);
-    v.setUint16(22, 1, true);
-    v.setUint32(24, sampleRate, true);
-    v.setUint32(28, sampleRate * 2, true);
-    v.setUint16(32, 2, true);
-    v.setUint16(34, 16, true);
-    str(36, "data");
-    v.setUint32(40, samples.length * 2, true);
+/** Little-endian PCM16, clamped: the wire format for streamed speech. */
+export function toPcm16(samples: Float32Array): ArrayBuffer {
+    const out = new Int16Array(samples.length);
     for (let i = 0; i < samples.length; i++) {
         const s = Math.max(-1, Math.min(1, samples[i]!));
-        v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
-    return buf;
+    return out.buffer;
 }
 
 export interface MicHandlers {
     onSpeechStart(): void;
-    onSpeechEnd(wav: ArrayBuffer): void | Promise<void>;
+    /** Utterance audio (16 kHz mono), streamed between onSpeechStart and onSpeechEnd. */
+    onAudio(samples16k: Float32Array): void;
+    /** Detection pauses until the returned promise settles (awaiting the final transcript). */
+    onSpeechEnd(): void | Promise<void>;
     onDiscard(): void;
     onLevel(level: number): void;
     onError(error: unknown): void;
@@ -83,17 +71,21 @@ export async function startMic(
             hearing = true;
             h.onSpeechStart();
         },
+        audio: (samples) => {
+            if (!acceptsDetection() || !hearing) return;
+            h.onAudio(samples);
+        },
         discard: () => {
             if (!acceptsDetection()) return;
             hearing = false;
             h.onDiscard();
         },
-        end: (samples) => {
-            if (!acceptsDetection()) return;
+        end: () => {
+            if (!acceptsDetection() || !hearing) return;
             hearing = false;
             transcribing = true;
             void Promise.resolve().then(() => {
-                if (!stopped) return h.onSpeechEnd(encodeWav(samples, 16000));
+                if (!stopped) return h.onSpeechEnd();
             }).catch((error: unknown) => { if (!stopped) h.onError(error); }).finally(() => {
                 transcribing = false;
                 if (!stopped) detector.reset();

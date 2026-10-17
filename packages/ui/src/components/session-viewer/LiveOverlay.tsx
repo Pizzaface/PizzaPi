@@ -99,7 +99,10 @@ export function LiveOverlay({ onClose: close, sessionName, ...opts }: LiveVoiceO
                         <p className="text-sm text-destructive">{live.error}</p>
                     ) : (
                         <>
-                            {live.userCaption && <p className="line-clamp-2 text-sm text-muted-foreground">“{live.userCaption}”</p>}
+                            {live.userCaption && (
+                                // Live hypotheses change every half second; announce only the final text.
+                                <p aria-hidden={live.userCaptionPartial || undefined} className={cn("line-clamp-2 text-sm text-muted-foreground", live.userCaptionPartial && "italic opacity-70")}>“{live.userCaption}”</p>
+                            )}
                             {live.agentCaption && <p className="line-clamp-3 text-lg leading-snug">{live.agentCaption}</p>}
                         </>
                     )}

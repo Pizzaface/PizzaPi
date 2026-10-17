@@ -102,4 +102,8 @@ test("non-speech annotations from the transcriber become an empty transcript", a
     const { stripNonSpeech } = await import("./service/engine");
     for (const cough of ["(coughing)", "[coughing].", "*cough*", " [BLANK_AUDIO] ", "♪"]) expect(stripNonSpeech(cough)).toBe("");
     expect(stripNonSpeech("(coughing) Run the tests.")).toBe("Run the tests.");
+    // Ordinary parenthetical or bracketed speech is kept.
+    expect(stripNonSpeech("Run the build (with tests) please.")).toBe("Run the build (with tests) please.");
+    expect(stripNonSpeech("Rename it [draft] for now.")).toBe("Rename it [draft] for now.");
+    expect(stripNonSpeech("Make it *bold*.")).toBe("Make it *bold*.");
 });

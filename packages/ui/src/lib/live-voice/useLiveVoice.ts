@@ -3,6 +3,7 @@ import { resolveTunnelTarget } from "@/hooks/useTunnelSrc";
 import { PlaybackQueue, startMic } from "./audio";
 import { replyText, SpeechChunker } from "./speech";
 import { fetchTunnelWithFallback } from "./tunnel-fetch";
+import { disconnected, SttSocket, sttSocketUrl } from "./stt-socket";
 
 export type LivePhase = "starting" | "listening" | "hearing" | "transcribing" | "thinking" | "speaking" | "error";
 
@@ -27,6 +28,8 @@ export interface LiveVoiceState {
     muted: boolean;
     setMuted(m: boolean): void;
     userCaption: string;
+    /** True while userCaption is a live hypothesis that may still change. */
+    userCaptionPartial: boolean;
     agentCaption: string;
     /** e.g. "Downloading voice models… 42%" while starting. */
     status: string;
@@ -49,6 +52,8 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const [playing, setPlaying] = React.useState(false);
     const [muted, setMutedState] = React.useState(false);
     const [userCaption, setUserCaption] = React.useState("");
+    const [userCaptionPartial, setUserCaptionPartial] = React.useState(false);
+    const [sttOpen, setSttOpen] = React.useState(false);
     const [agentCaption, setAgentCaption] = React.useState("");
     const levelRef = React.useRef(0);
 
@@ -59,6 +64,11 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const micRef = React.useRef<Awaited<ReturnType<typeof startMic>> | null>(null);
     const micStreamRef = React.useRef<MediaStream | null>(null);
     const chunkerRef = React.useRef<SpeechChunker | null>(null);
+    const sttRef = React.useRef<SttSocket | null>(null);
+    // Set by the mic effect: undo a speech-start pause when the utterance fails mid-speech.
+    const sttFailedRef = React.useRef<(() => void) | null>(null);
+    // The last committed caption, restored when a candidate utterance is dropped.
+    const committedCaption = React.useRef("");
 
     // Permission is requested by the Live button's click handler. Observe the
     // result now, and stop the stream if the overlay closes before models load.
@@ -156,6 +166,29 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         [api],
     );
 
+    // 3a. Streaming STT socket, once models are ready.
+    React.useEffect(() => {
+        if (!ready || !base) return;
+        const stt = new SttSocket(
+            [sttSocketUrl(base), ...(fallbackBase ? [sttSocketUrl(fallbackBase)] : [])],
+            {
+                partial: (text) => {
+                    if (!text) return;
+                    setUserCaption(text);
+                    setUserCaptionPartial(true);
+                },
+                openChange: setSttOpen,
+                failed: () => sttFailedRef.current?.(),
+            },
+        );
+        sttRef.current = stt;
+        return () => {
+            stt.close();
+            sttRef.current = null;
+            setSttOpen(false);
+        };
+    }, [ready, base, fallbackBase]);
+
     // 3. Mic + playback, once models are ready.
     React.useEffect(() => {
         if (!ready) return;
@@ -168,6 +201,16 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         queueRef.current = queue;
         let stopped = false;
         const ac = new AbortController();
+        const restoreCaption = () => {
+            setUserCaption(committedCaption.current);
+            setUserCaptionPartial(false);
+        };
+        // Don't keep the reply paused until the VAD ends the turn; finish() reports the error.
+        sttFailedRef.current = () => {
+            if (stopped) return;
+            restoreCaption();
+            queue.resume();
+        };
         setMicReady(false);
         setStatus("Loading speech detector…");
 
@@ -186,36 +229,48 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                 // Noise is only a candidate interruption. Preserve audio until
                 // transcription confirms that the user actually said something.
                 queue.pause();
+                sttRef.current?.begin();
             },
+            onAudio: (samples) => sttRef.current?.audio(samples),
             onDiscard: () => {
                 setHearing(false);
+                sttRef.current?.cancel();
+                restoreCaption();
                 queue.resume();
             },
-            onSpeechEnd: async (wav) => {
+            onSpeechEnd: async () => {
                 setHearing(false);
                 setTranscribing(true);
                 try {
-                    const r = await api("api/stt", {
-                        method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav,
-                        signal: AbortSignal.any([ac.signal, AbortSignal.timeout(10_000)]),
-                    });
-                    const { text, error: err } = (await r.json()) as { text?: string; error?: string };
-                    if (!r.ok) throw new Error(err ?? `stt ${r.status}`);
+                    const stt = sttRef.current;
+                    if (!stt) throw disconnected("Speech service is not connected.");
+                    const text = await stt.finish();
                     if (stopped) return;
-                    if (!text?.trim()) {
+                    if (!text.trim()) {
+                        restoreCaption();
                         queue.resume();
                         return;
                     }
                     queue.clear();
+                    committedCaption.current = text;
                     setUserCaption(text);
+                    setUserCaptionPartial(false);
                     setAgentCaption("");
-                    // Don't hold the "transcribing" phase open for the delivery ack.
+                    // Don't hold the "transcribing" phase, or the mic, open for the delivery ack:
+                    // the user can keep talking while the message is delivered.
                     setTranscribing(false);
-                    if (!(await live.current.send(text, live.current.agentActive))) setUserCaption(`${text} (not sent)`);
+                    const notSent = () => {
+                        if (!stopped && committedCaption.current === text) setUserCaption(`${text} (not sent)`);
+                    };
+                    void Promise.resolve(live.current.send(text, live.current.agentActive)).then((ok) => ok || notSent(), notSent);
                 } catch (e) {
+                    const name = e instanceof Error ? e.name : "";
                     if (!stopped) {
+                        restoreCaption();
                         queue.resume();
-                        setError(e instanceof Error ? e.message : String(e));
+                        // Cancelled (mute) or dropped socket: not fatal. A dropped socket reconnects
+                        // by itself; the utterance is lost rather than replayed, so it is never sent twice.
+                        if (name !== "AbortError" && name !== "SttDisconnected") setError(e instanceof Error ? e.message : String(e));
                     }
                 } finally {
                     if (!stopped) setTranscribing(false);
@@ -249,6 +304,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
             micRef.current?.stop();
             micRef.current = null;
             queueRef.current = null;
+            sttFailedRef.current = null;
         };
     }, [ready, api, o.audioContext]);
 
@@ -274,11 +330,13 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const setMuted = React.useCallback((m: boolean) => {
         setMutedState(m);
         micRef.current?.setMuted(m);
+        // Muting also withdraws an utterance still waiting for its final text.
+        if (m) sttRef.current?.cancel();
     }, []);
 
     const phase: LivePhase = error
         ? "error"
-        : !ready || !micReady
+        : !ready || !micReady || !sttOpen
           ? "starting"
           : hearing
             ? "hearing"
@@ -290,5 +348,6 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                   ? "thinking"
                   : "listening";
 
-    return { phase, muted, setMuted, userCaption, agentCaption, status, error, levelRef };
+    const shownStatus = ready && micReady && !sttOpen ? "Connecting to speech service…" : status;
+    return { phase, muted, setMuted, userCaption, userCaptionPartial, agentCaption, status: shownStatus, error, levelRef };
 }
