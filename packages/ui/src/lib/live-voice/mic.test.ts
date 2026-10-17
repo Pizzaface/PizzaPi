@@ -4,7 +4,7 @@ import * as vad from "./vad";
 
 let spy: ReturnType<typeof spyOn> | undefined;
 afterEach(() => { spy?.mockRestore(); });
-const handlers: MicHandlers = { onSpeechStart() {}, onSpeechEnd() {}, onDiscard() {}, onLevel() {}, onError() {} };
+const handlers: MicHandlers = { onSpeechStart() {}, onAudio() {}, onSpeechEnd() {}, onDiscard() {}, onLevel() {}, onError() {} };
 const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 function audioFixture() {
     const processor = { onaudioprocess: null as ((event: AudioProcessingEvent) => void) | null, connect() { return this; }, disconnect() {} };

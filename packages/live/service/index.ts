@@ -1,14 +1,15 @@
 /**
  * Live voice runner service. The web UI's Live overlay talks to this over the
- * tunnel: speech in (/api/stt), speech out (/api/tts), and the per-session
- * "live" flag the session extension reads.
+ * tunnel: streaming speech in (WebSocket /api/stt/stream), speech out
+ * (/api/tts), and the per-session "live" flag the session extension reads.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Server } from "bun";
+import type { Server, ServerWebSocket } from "bun";
 import { setLive } from "../flags.ts";
-import { DEFAULT_VOICE, SpeechEngine } from "./engine.ts";
+import { DEFAULT_VOICE, SpeechEngine, stripNonSpeech } from "./engine.ts";
+import type { SttStream } from "./stt.ts";
 import { decodeWav, resample } from "./wav.ts";
 
 const MAX_TTS_CHARS = 1000;
@@ -68,17 +69,116 @@ export async function handleRequest(req: Request, engine: SpeechEngine, indexHtm
     return json({ error: "not found" }, 404);
 }
 
+/** Largest audio frame accepted from the browser: 2 s of 16 kHz PCM16. */
+const MAX_FRAME_BYTES = 16000 * 2 * 2;
+const STREAM_ROUTE = /\/api\/stt\/stream$/;
+
+/**
+ * Per-connection streaming STT state. One utterance at a time: `start` opens a
+ * stream (cancelling any previous one), binary PCM16 frames feed it, `end`
+ * asks for the final text. Events carry the client's utterance id so the
+ * browser can ignore anything stale.
+ */
+export interface SocketState {
+    engine: SpeechEngine;
+    current?: { id: number; stream: SttStream };
+    release?: () => void;
+}
+
+type Sock = Pick<ServerWebSocket<SocketState>, "data" | "send" | "close">;
+
+export const sttSocket = {
+    open(ws: Sock) {
+        ws.data.release = ws.data.engine.stt.retain();
+        ws.data.engine.stt.warm().catch(() => {});
+    },
+    message(ws: Sock, msg: string | Buffer) {
+        const st = ws.data;
+        if (typeof msg !== "string") {
+            if (!st.current) return;
+            if (msg.byteLength > MAX_FRAME_BYTES || msg.byteLength % 2) return void ws.close(1009, "bad audio frame");
+            const pcm16 = new Int16Array(msg.buffer.slice(msg.byteOffset, msg.byteOffset + msg.byteLength));
+            const pcm = new Float32Array(pcm16.length);
+            for (let i = 0; i < pcm16.length; i++) pcm[i] = pcm16[i]! / 32768;
+            st.current.stream.audio(pcm);
+            return;
+        }
+        let m: { type?: unknown; id?: unknown };
+        try {
+            m = JSON.parse(msg);
+        } catch {
+            return void ws.close(1003, "bad message");
+        }
+        if (m.type === "ping") return void ws.send(JSON.stringify({ type: "pong" }));
+        const id = m.id;
+        if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) return;
+        if (m.type === "start") {
+            st.current?.stream.cancel();
+            const send = (o: object) => {
+                if (st.current?.id === id) ws.send(JSON.stringify({ ...o, id }));
+            };
+            st.current = {
+                id,
+                stream: st.engine.stt.open({
+                    partial: (text) => send({ type: "partial", text: stripNonSpeech(text) }),
+                    final: (text) => {
+                        send({ type: "final", text: stripNonSpeech(text) });
+                        if (st.current?.id === id) st.current = undefined;
+                    },
+                    error: (message) => {
+                        send({ type: "error", message });
+                        if (st.current?.id === id) st.current = undefined;
+                    },
+                }),
+            };
+        } else if (st.current?.id === id) {
+            if (m.type === "end") st.current.stream.end();
+            else if (m.type === "cancel") {
+                st.current.stream.cancel();
+                st.current = undefined;
+            }
+        }
+    },
+    close(ws: Sock) {
+        ws.data.current?.stream.cancel();
+        ws.data.current = undefined;
+        ws.data.release?.();
+    },
+};
+
+/** Serve HTTP routes plus the streaming STT WebSocket. Loopback only: the tunnel dials 127.0.0.1. */
+export function serve(engine: SpeechEngine, indexHtml: string, port = 0): Server<SocketState> {
+    return Bun.serve<SocketState, never>({
+        hostname: "127.0.0.1",
+        port,
+        // idleTimeout: the first TTS call can wait on a model load well past Bun's 10s default.
+        idleTimeout: 240,
+        fetch(req, server) {
+            if (STREAM_ROUTE.test(new URL(req.url).pathname) && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+                return server.upgrade(req, { data: { engine } }) ? undefined : json({ error: "upgrade failed" }, 400);
+            }
+            return handleRequest(req, engine, indexHtml);
+        },
+        websocket: {
+            maxPayloadLength: MAX_FRAME_BYTES + 1024,
+            idleTimeout: 120,
+            open: (ws) => sttSocket.open(ws),
+            message: (ws, msg) => sttSocket.message(ws, msg),
+            close: (ws) => sttSocket.close(ws),
+        },
+    });
+}
+
 class LiveService {
     get id() {
         return "live";
     }
-    #server: Server<undefined> | null = null;
+    #server: Server<SocketState> | null = null;
     #engine = new SpeechEngine();
 
     init(_socket: unknown, { announcePanel }: { announcePanel?: (port: number) => void }) {
         const indexHtml = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "panel", "index.html"), "utf-8");
-        // idleTimeout: the first STT/TTS call can wait on a model load well past Bun's 10s default.
-        this.#server = Bun.serve({ port: 0, idleTimeout: 240, fetch: (req) => handleRequest(req, this.#engine, indexHtml) });
+        this.#server = serve(this.#engine, indexHtml);
         announcePanel?.(this.#server.port!);
     }
 
@@ -89,6 +189,7 @@ class LiveService {
     dispose() {
         this.#server?.stop(true);
         this.#server = null;
+        this.#engine.dispose();
     }
 }
 

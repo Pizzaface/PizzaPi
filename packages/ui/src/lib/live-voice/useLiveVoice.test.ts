@@ -14,6 +14,43 @@ beforeEach(() => {
         }, rate, events));
 });
 
+/** Fake Live STT socket: opens immediately, answers `end` via `reply`, records traffic. */
+class FakeSttWs {
+    static all: FakeSttWs[] = [];
+    static reply: (id: number) => object = (id) => ({ type: "final", id, text: "" });
+    static partial: string | null = null;
+    sent: Array<string | ArrayBuffer> = [];
+    readyState = 0; bufferedAmount = 0; binaryType = "blob";
+    onopen: ((e: Event) => void) | null = null;
+    onmessage: ((e: MessageEvent) => void) | null = null;
+    onclose: ((e: CloseEvent) => void) | null = null;
+    onerror: ((e: Event) => void) | null = null;
+    constructor(public url: string) {
+        FakeSttWs.all.push(this);
+        queueMicrotask(() => { this.readyState = 1; this.onopen?.(new Event("open")); });
+    }
+    send(d: string | ArrayBuffer) {
+        this.sent.push(d);
+        if (typeof d !== "string") {
+            if (FakeSttWs.partial) this.#emit({ type: "partial", id: this.#current, text: FakeSttWs.partial });
+            return;
+        }
+        const m = JSON.parse(d);
+        if (m.type === "start") this.#current = m.id;
+        if (m.type === "end") queueMicrotask(() => this.#emit(FakeSttWs.reply(m.id)));
+    }
+    close() { this.readyState = 3; }
+    messages() { return this.sent.filter((d): d is string => typeof d === "string").map((d) => JSON.parse(d).type as string); }
+    #current = 0;
+    #emit(o: object) { this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(o) })); }
+}
+const originalWebSocket = globalThis.WebSocket;
+beforeEach(() => {
+    FakeSttWs.all = [];
+    FakeSttWs.partial = null;
+    globalThis.WebSocket = FakeSttWs as unknown as typeof WebSocket;
+});
+
 const originalFetch = globalThis.fetch;
 const originalRaf = globalThis.requestAnimationFrame;
 const originalCancelRaf = globalThis.cancelAnimationFrame;
@@ -21,25 +58,23 @@ afterEach(() => {
     cleanup();
     detectorSpy.mockRestore();
     globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
     globalThis.requestAnimationFrame = originalRaf;
     globalThis.cancelAnimationFrame = originalCancelRaf;
 });
 const settle = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 
-for (const utterance of ["noise", "discard", "empty", "real", "mute", "failure"] as const) {
+for (const utterance of ["noise", "discard", "empty", "real", "mute", "failure", "drop"] as const) {
     test(`Live ${utterance} interruption preserves or replaces queued speech appropriately`, async () => {
         const sent: string[] = [];
-        let sttCalls = 0;
+        FakeSttWs.reply = (id) => utterance === "failure"
+            ? { type: "error", id, message: "transcription unavailable" }
+            : { type: "final", id, text: utterance === "real" ? "Stop please" : "  " };
         globalThis.fetch = (async (input: RequestInfo | URL) => {
             const url = String(input);
             if (url.endsWith("/api/tunnel-token")) return Response.json({ url: "/api/tunnel/auth/test/" });
             if (url.endsWith("/api/status")) return Response.json({ stt: "ready", tts: "ready" });
             if (url.endsWith("/api/tts")) return new Response(new ArrayBuffer(1));
-            if (url.endsWith("/api/stt")) {
-                sttCalls++;
-                if (utterance === "failure") return Response.json({ error: "transcription unavailable" }, { status: 503 });
-                return Response.json({ text: utterance === "real" ? "Stop please" : "  " });
-            }
             return Response.json({});
         }) as typeof fetch;
         globalThis.requestAnimationFrame = () => 1;
@@ -88,9 +123,25 @@ for (const utterance of ["noise", "discard", "empty", "real", "mute", "failure"]
         // Reply text can finish while the potential interruption is assessed.
         await act(async () => { rerender({ text: "First sentence. Second sentence. Third sentence." }); await settle(); });
         expect(sources).toHaveLength(1);
+        if (utterance === "drop") {
+            // Socket drops mid-speech: the reply resumes now, not when the VAD ends the turn.
+            await act(async () => { FakeSttWs.all[0]!.onclose?.(new CloseEvent("close")); await settle(); });
+            expect(sources).toHaveLength(2);
+            expect(sources[1]!.offset).toBe(2);
+            await act(async () => { await feed(8, 0.001); });
+            expect(sent).toEqual([]);
+            expect(result.current.error).toBeNull();
+            expect(sources).toHaveLength(2);
+            return;
+        }
         if (utterance === "mute") act(() => result.current.setMuted(true));
         await act(async () => { await feed(8, 0.001); });
-        expect(sttCalls).toBe(nonSpeech || utterance === "mute" ? 0 : 1);
+        const traffic = FakeSttWs.all[0]!.messages();
+        expect(traffic.filter((t) => t === "end")).toHaveLength(nonSpeech || utterance === "mute" ? 0 : 1);
+        expect(traffic.filter((t) => t === "start")).toHaveLength(nonSpeech ? 0 : 1);
+        if (utterance === "mute") expect(traffic).toContain("cancel");
+        // Audio streamed while the user was still talking, not after.
+        if (!nonSpeech) expect(FakeSttWs.all[0]!.sent.some((d) => d instanceof ArrayBuffer)).toBe(true);
         if (utterance === "real") {
             expect(sent).toEqual(["Stop please"]);
             expect(sources).toHaveLength(1);
@@ -144,3 +195,77 @@ test("Live speaks the sentence before a tool call without waiting for more text"
     await act(async () => { rerender({ text: "Running the build now.", tools: new Map([["t1", "bash"]]) }); await settle(); });
     expect(spoken).toEqual(["Running the build now."]);
 });
+
+for (const ending of ["final", "disconnect", "mute"] as const) {
+    test(`partial captions show while talking; ${{ final: "only the final is sent, once", disconnect: "a dropped socket loses the utterance without an error or a send", mute: "muting while awaiting the final withdraws it" }[ending]}`, async () => {
+        const sent: string[] = [];
+        FakeSttWs.partial = "Run the";
+        FakeSttWs.reply = (id) => ({ type: "final", id, text: "Run the tests." });
+        globalThis.fetch = (async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith("/api/tunnel-token")) return Response.json({ url: "/api/tunnel/auth/test/" });
+            if (url.endsWith("/api/status")) return Response.json({ stt: "ready", tts: "ready" });
+            return Response.json({});
+        }) as typeof fetch;
+        globalThis.requestAnimationFrame = () => 1;
+        globalThis.cancelAnimationFrame = () => {};
+        const processor = { onaudioprocess: null as ((event: any) => void) | null, connect() { return this; }, disconnect() {} };
+        const node = () => ({ connect() { return this; }, disconnect() {}, gain: { value: 0 }, fftSize: 256 });
+        const ctx = {
+            sampleRate: 16000, currentTime: 0, destination: {}, close: async () => {},
+            createAnalyser: node, createMediaStreamSource: node, createGain: node, createScriptProcessor: () => processor,
+        };
+        const stream = Promise.resolve({ getAudioTracks: () => [], getTracks: () => [] } as unknown as MediaStream);
+        const { result } = renderHook(() => useLiveVoice({
+            audioContext: ctx as unknown as AudioContext, micStream: stream,
+            sessionId: "test", port: 1234, agentActive: false, messages: [],
+            // The delivery ack never arrives: the mic must keep working anyway.
+            send: (text) => { sent.push(text); return new Promise<boolean>(() => {}); },
+        }));
+        await act(settle);
+        expect(result.current.phase).toBe("listening");
+        const feed = async (count: number, amplitude: number) => {
+            for (let i = 0; i < count; i++) {
+                processor.onaudioprocess!({ inputBuffer: { getChannelData: () => new Float32Array(2048).fill(amplitude) } });
+                await settle();
+            }
+        };
+        await act(async () => { await feed(4, 0.1); });
+        expect(result.current.phase).toBe("hearing");
+        expect(result.current.userCaption).toBe("Run the");
+        expect(result.current.userCaptionPartial).toBe(true);
+        expect(sent).toEqual([]);
+        const ws = FakeSttWs.all[0]!;
+        if (ending !== "final") ws.send = function (d) { this.sent.push(d); }; // swallow `end`
+        await act(async () => { await feed(8, 0.001); });
+        if (ending === "mute") {
+            expect(result.current.phase).toBe("transcribing");
+            act(() => result.current.setMuted(true));
+            await act(settle);
+            expect(ws.messages()).toContain("cancel");
+            ws.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "final", id: 1, text: "Run the tests." }) }));
+            await act(settle);
+            expect(sent).toEqual([]);
+            expect(result.current.error).toBeNull();
+            expect(result.current.userCaption).toBe("");
+        } else if (ending === "disconnect") {
+            expect(result.current.phase).toBe("transcribing");
+            await act(async () => { ws.onclose?.(new CloseEvent("close")); await settle(); });
+            expect(sent).toEqual([]);
+            expect(result.current.error).toBeNull();
+            expect(result.current.userCaption).toBe("");
+            expect(result.current.phase).toBe("starting"); // reconnecting
+        } else {
+            expect(sent).toEqual(["Run the tests."]);
+            expect(result.current.userCaption).toBe("Run the tests.");
+            expect(result.current.userCaptionPartial).toBe(false);
+            ws.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "final", id: 1, text: "again" }) }));
+            await act(settle);
+            expect(sent).toEqual(["Run the tests."]);
+            // Next utterance while the first delivery is still unacknowledged.
+            await act(async () => { await feed(4, 0.1); await feed(8, 0.001); });
+            expect(ws.messages().filter((t) => t === "start")).toHaveLength(2);
+            expect(sent).toEqual(["Run the tests.", "Run the tests."]);
+        }
+    });
+}
