@@ -1,9 +1,10 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { Mic, MicOff, X } from "lucide-react";
+import { AlertCircle, Check, Loader2, Mic, MicOff, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLiveVoice, type LivePhase, type LiveVoiceOptions } from "@/lib/live-voice/useLiveVoice";
-import { describeActiveTools } from "@/lib/live-voice/tool-activity";
+import { liveFeed } from "@/lib/live-voice/feed";
+import { playCloseCue, playOpenCue, startWaitingCue } from "@/lib/live-voice/cues";
 
 const PHASE_LABEL: Record<LivePhase, string> = {
     starting: "",
@@ -15,9 +16,24 @@ const PHASE_LABEL: Record<LivePhase, string> = {
     error: "Something went wrong",
 };
 
-export function LiveOverlay({ onClose, sessionName, ...opts }: LiveVoiceOptions & { onClose(): void; sessionName?: string }) {
+export function LiveOverlay({ onClose: close, sessionName, ...opts }: LiveVoiceOptions & { onClose(): void; sessionName?: string }) {
     const live = useLiveVoice(opts);
+    const onClose = React.useCallback(() => {
+        playCloseCue();
+        close();
+    }, [close]);
     const orbRef = React.useRef<HTMLDivElement>(null);
+    const ctx = opts.audioContext;
+
+    const opened = React.useRef(false);
+    React.useEffect(() => {
+        if (opened.current) return;
+        opened.current = true;
+        playOpenCue(ctx);
+    }, [ctx]);
+
+    const thinking = live.phase === "thinking";
+    React.useEffect(() => (thinking ? startWaitingCue(ctx) : undefined), [thinking, ctx]);
 
     // Drive the orb straight from the audio level, without re-rendering.
     React.useEffect(() => {
@@ -39,7 +55,11 @@ export function LiveOverlay({ onClose, sessionName, ...opts }: LiveVoiceOptions 
     }, [onClose]);
 
     const label = live.phase === "starting" ? live.status : live.muted ? "Muted" : PHASE_LABEL[live.phase];
-    const activeWork = live.phase === "thinking" ? describeActiveTools(opts.activeToolCalls?.values() ?? []) : null;
+    const feed = React.useMemo(() => liveFeed(opts.messages, opts.activeToolCalls), [opts.messages, opts.activeToolCalls]);
+    const feedRef = React.useRef<HTMLOListElement>(null);
+    React.useEffect(() => {
+        if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    }, [feed]);
 
     return createPortal(
         <div
@@ -53,12 +73,12 @@ export function LiveOverlay({ onClose, sessionName, ...opts }: LiveVoiceOptions 
                 <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-red-500">Live</span>
             </div>
 
-            <div className="flex flex-1 flex-col items-center justify-center gap-10 px-6">
-                <div className="relative flex size-48 items-center justify-center">
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 px-6">
+                <div className="relative flex size-40 shrink-0 items-center justify-center">
                     <div
                         ref={orbRef}
                         className={cn(
-                            "size-40 rounded-full transition-[background,opacity] duration-500 will-change-transform",
+                            "size-32 rounded-full transition-[background,opacity] duration-500 will-change-transform",
                             live.phase === "speaking"
                                 ? "bg-gradient-to-br from-sky-400 to-indigo-600"
                                 : live.phase === "thinking" || live.phase === "transcribing"
@@ -75,7 +95,6 @@ export function LiveOverlay({ onClose, sessionName, ...opts }: LiveVoiceOptions 
 
                 <div className="flex min-h-28 w-full max-w-md flex-col items-center gap-3 text-center" aria-live="polite">
                     <p className="text-sm font-medium text-muted-foreground">{label}</p>
-                    {activeWork && <p className="text-xs text-muted-foreground">{activeWork}</p>}
                     {live.error ? (
                         <p className="text-sm text-destructive">{live.error}</p>
                     ) : (
@@ -85,6 +104,39 @@ export function LiveOverlay({ onClose, sessionName, ...opts }: LiveVoiceOptions 
                         </>
                     )}
                 </div>
+
+                {feed.length > 0 && (
+                    <ol
+                        ref={feedRef}
+                        aria-label="Recent activity"
+                        className="flex max-h-48 w-full max-w-md shrink-0 flex-col gap-1.5 overflow-y-auto text-left text-xs [mask-image:linear-gradient(to_bottom,transparent,black_2rem)]"
+                    >
+                        {feed.map((item) => (
+                            <li key={item.key} className="flex min-w-0 items-start gap-2">
+                                {item.kind === "tool" ? (
+                                    <>
+                                        {item.state === "running" ? (
+                                            <Loader2 className="mx-2 mt-0.5 size-3 shrink-0 animate-spin text-indigo-500" aria-label="Running" />
+                                        ) : item.state === "error" ? (
+                                            <AlertCircle className="mx-2 mt-0.5 size-3 shrink-0 text-destructive" aria-label="Failed" />
+                                        ) : (
+                                            <Check className="mx-2 mt-0.5 size-3 shrink-0 text-muted-foreground" aria-label="Done" />
+                                        )}
+                                        <span className="min-w-0">
+                                            <span className={item.state === "running" ? "text-foreground" : "text-muted-foreground"}>{item.text}</span>
+                                            {item.detail && <span className="block truncate font-mono text-[0.65rem] text-muted-foreground/70">{item.detail}</span>}
+                                        </span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span className="w-7 shrink-0 pt-px text-center text-[0.6rem] font-semibold uppercase text-muted-foreground">{item.kind === "user" ? "You" : "AI"}</span>
+                                        <span className={cn("line-clamp-2 min-w-0", item.kind === "user" ? "text-muted-foreground" : "text-foreground/80")}>{item.text}</span>
+                                    </>
+                                )}
+                            </li>
+                        ))}
+                    </ol>
+                )}
             </div>
 
             <div className="flex items-center justify-center gap-8 pb-8">

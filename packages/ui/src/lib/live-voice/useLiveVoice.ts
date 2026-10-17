@@ -252,7 +252,9 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         };
     }, [ready, api, o.audioContext]);
 
-    // 4. Speak new sentences of the reply as they stream in.
+    // 4. Speak new sentences of the reply as they stream in. Text written before
+    // a tool call is complete, so flush it instead of waiting for more text.
+    const toolRunning = (o.activeToolCalls?.size ?? 0) > 0;
     React.useEffect(() => {
         const text = replyText(o.messages);
         if (!chunkerRef.current) {
@@ -263,9 +265,9 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         }
         if (!ready) return;
         const c = chunkerRef.current;
-        const sentences = o.agentActive ? c.push(text) : [...c.push(text), ...c.flush(text)];
+        const sentences = o.agentActive && !toolRunning ? c.push(text) : [...c.push(text), ...c.flush(text)];
         for (const s of sentences) speak(s);
-    }, [o.messages, o.agentActive, ready, speak]);
+    }, [o.messages, o.agentActive, toolRunning, ready, speak]);
 
     React.useEffect(() => () => void o.audioContext.close().catch(() => {}), [o.audioContext]);
 

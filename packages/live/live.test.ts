@@ -97,3 +97,9 @@ describe("http routes", () => {
         expect(await (await call("/")).text()).toBe("<html>");
     });
 });
+
+test("non-speech annotations from the transcriber become an empty transcript", async () => {
+    const { stripNonSpeech } = await import("./service/engine");
+    for (const cough of ["(coughing)", "[coughing].", "*cough*", " [BLANK_AUDIO] ", "♪"]) expect(stripNonSpeech(cough)).toBe("");
+    expect(stripNonSpeech("(coughing) Run the tests.")).toBe("Run the tests.");
+});

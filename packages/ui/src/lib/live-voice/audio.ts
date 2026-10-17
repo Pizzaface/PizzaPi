@@ -255,7 +255,6 @@ export class PlaybackQueue {
 
     async #drain() {
         this.#running = true;
-        if (!this.#paused) this.onStart();
         while (this.#queue.length) {
             const gen = this.#gen;
             const item = this.#queue.shift()!;
@@ -267,6 +266,8 @@ export class PlaybackQueue {
                 if (this.#paused) await new Promise<void>((resolve) => { this.#wake = resolve; });
                 if (gen !== this.#gen) break;
                 if (this.#paused) continue;
+                // "Speaking" starts with audible audio, not when the TTS fetch is queued.
+                this.onStart();
                 item.onPlay?.();
                 await new Promise<void>((resolve) => {
                     const node = this.ctx.createBufferSource();
