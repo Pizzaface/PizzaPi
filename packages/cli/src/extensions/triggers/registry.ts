@@ -194,26 +194,6 @@ const externalRenderer: TriggerRenderer = {
     },
 };
 
-const escalateRenderer: TriggerRenderer = {
-    type: "lifecycle:escalation",
-    render(trigger) {
-        const name = displayName(trigger);
-        const reason = typeof trigger.payload.reason === "string"
-            ? trigger.payload.reason
-            : "No reason provided.";
-
-        return [
-            `🚨 Trigger escalated from child "${name}":`,
-            reason,
-            "",
-            `This requires human attention. ${respondLine(trigger.triggerId)}`,
-        ].join("\n");
-    },
-    parseResponse(responseText) {
-        return responseText;
-    },
-};
-
 // ── Registry ────────────────────────────────────────────────────────────────
 
 export const TRIGGER_RENDERERS: ReadonlyMap<string, TriggerRenderer> = new Map([
@@ -221,7 +201,6 @@ export const TRIGGER_RENDERERS: ReadonlyMap<string, TriggerRenderer> = new Map([
     ["lifecycle:plan_review", planReviewRenderer],
     ["lifecycle:session_complete", sessionCompleteRenderer],
     ["lifecycle:session_error", sessionErrorRenderer],
-    ["lifecycle:escalation", escalateRenderer],
     ["external", externalRenderer],
     ["webhook", externalRenderer],
     ["service", externalRenderer],

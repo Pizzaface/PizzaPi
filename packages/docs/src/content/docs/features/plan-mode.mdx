@@ -199,7 +199,7 @@ The parent agent can respond with:
 - `respond_to_trigger(triggerId, "approve", "approve")` — child proceeds with execution
 - `respond_to_trigger(triggerId, "cancel", "cancel")` — child stops
 - `respond_to_trigger(triggerId, "Your step 2 should also handle middleware", "edit")` — child revises the plan
-- `escalate_trigger(triggerId)` — passes the decision to the human viewer
+- `escalate_trigger(triggerId)` — passes the decision up the chain: your parent agent, or the human viewer at the top
 
 <Aside type="caution">
   Plan review triggers have a **5-minute timeout** (`300,000ms`). If the parent doesn't respond in time, the child treats it as a cancellation.

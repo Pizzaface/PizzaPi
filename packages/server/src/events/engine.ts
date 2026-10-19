@@ -656,49 +656,66 @@ export async function sweepExpiredContracts(deps: EngineDeps, now = new Date()):
       continue;
     }
     try {
-      // Re-read immediately before the side effect: a response that raced the
-      // expiry query must not trigger a human push.
-      const current = await getDelivery(delivery.deliveryId);
-      if (!current || (current.status !== "pending" && current.status !== "inflight" && current.status !== "delivered")) continue;
-      const nextSessionId = await deps.escalate(current, event);
-      // Guard = [pending, inflight, delivered]: a response that raced the
-      // sweep wins — never clobber a responded row or double-escalate it.
-      const won = await updateDelivery(
-        delivery.deliveryId,
-        { status: nextSessionId ? "escalated" : "expired" },
-        { guard: ["pending", "inflight", "delivered"] },
-      );
-      if (!won) continue;
-      if (nextSessionId) {
-        // The parent hop inherits a bound (or unresolvable) recipient;
-        // otherwise it belongs to the event's owner, as before.
-        const tenant = await deliveryTenant(current, event);
-        const recipient = tenant === null || current.recipientBound === true
-          ? { recipientUserId: tenant ?? null, recipientBound: true }
-          : deliveryRecipientFor(null, event.source.userId);
-        const next = await createDelivery({
-          eventId: event.eventId,
-          eventType: event.type,
-          sessionId: nextSessionId,
-          deliverAs: "steer",
-          ...recipient,
-          expiresAt: event.responseContract?.ttlMs
-            ? new Date(now.getTime() + event.responseContract.ttlMs).toISOString()
-            : undefined,
-        });
-        if (next) {
-          await claimAndDeliver(next, event, null, deps, "Escalation delivery");
-        } else {
-          log.warn(
-            `Escalation parent ${nextSessionId} already has a delivery for event ${event.eventId} ` +
-            `(from ${delivery.deliveryId})`,
-          );
-        }
-      }
-      handled++;
+      if ((await escalateDelivery(delivery.deliveryId, deps, now)) !== null) handled++;
     } catch (err) {
       log.error(`Escalation failed for delivery ${delivery.deliveryId}:`, err);
     }
   }
   return handled;
+}
+
+/**
+ * Push one open contract delivery a single hop up the escalation chain now:
+ * parent session (fresh delivery) or, at the top, the human (web push).
+ * Shared by the TTL sweep and the explicit escalate endpoint. Returns the
+ * next session id, "human" at chain end, or null when nothing changed
+ * (already answered/escalated, or the event is gone).
+ */
+export async function escalateDelivery(
+  deliveryId: string,
+  deps: EngineDeps,
+  now = new Date(),
+): Promise<string | null> {
+  // Read immediately before the side effect: a response that raced the
+  // caller must not trigger a parent hop or a human push.
+  const delivery = await getDelivery(deliveryId);
+  if (!delivery || (delivery.status !== "pending" && delivery.status !== "inflight" && delivery.status !== "delivered")) return null;
+  const event = await getEvent(delivery.eventId);
+  if (!event) return null;
+  const nextSessionId = await deps.escalate(delivery, event);
+  // Guard = [pending, inflight, delivered]: a response that raced us wins —
+  // never clobber a responded row or double-escalate it.
+  const won = await updateDelivery(
+    delivery.deliveryId,
+    { status: nextSessionId ? "escalated" : "expired" },
+    { guard: ["pending", "inflight", "delivered"] },
+  );
+  if (!won) return null;
+  if (nextSessionId) {
+    // The parent hop inherits a bound (or unresolvable) recipient;
+    // otherwise it belongs to the event's owner, as before.
+    const tenant = await deliveryTenant(delivery, event);
+    const recipient = tenant === null || delivery.recipientBound === true
+      ? { recipientUserId: tenant ?? null, recipientBound: true }
+      : deliveryRecipientFor(null, event.source.userId);
+    const next = await createDelivery({
+      eventId: event.eventId,
+      eventType: event.type,
+      sessionId: nextSessionId,
+      deliverAs: "steer",
+      ...recipient,
+      expiresAt: event.responseContract?.ttlMs
+        ? new Date(now.getTime() + event.responseContract.ttlMs).toISOString()
+        : undefined,
+    });
+    if (next) {
+      await claimAndDeliver(next, event, null, deps, "Escalation delivery");
+    } else {
+      log.warn(
+        `Escalation parent ${nextSessionId} already has a delivery for event ${event.eventId} ` +
+        `(from ${delivery.deliveryId})`,
+      );
+    }
+  }
+  return nextSessionId ?? "human";
 }

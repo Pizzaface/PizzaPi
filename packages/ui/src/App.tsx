@@ -4472,56 +4472,29 @@ export function App() {
   );
 
   // ── Respond to a trigger from a child session ─────────────────────────────
-  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): Promise<boolean> => {
-    const socket = viewerWsRef.current;
-    const sessionId = lifecycleRefs.activeSessionId.current;
-    if (!socket || !socket.connected || !sessionId) {
-      setLifecycleStatus("Not connected to a live session");
-      return Promise.resolve(false);
-    }
-
-    // Use the child's sourceSessionId (extracted from the trigger comment) as
-    // targetSessionId so the server can route directly to the child session,
-    // bypassing the parent's in-memory receivedTriggers map. This makes
-    // delivery resilient to parent reconnects/resumes where the map is gone.
-    // Falls back to the parent session ID for legacy triggers without source.
-    return new Promise<boolean>((resolve) => {
-      let resolved = false;
-      const settle = (success: boolean, message?: string) => {
-        if (resolved) return;
-        resolved = true;
-        if (message) setLifecycleStatus(message);
-        errorCleanup();
-        resolve(success);
-      };
-
-      // Listen for trigger_error events — the server emits these immediately
-      // when the target child is missing, unauthorized, or relay delivery fails.
-      // Each error carries its triggerId so concurrent trigger submissions
-      // don't interfere with each other (unlike the shared "error" event).
-      const onTriggerError = (data: any) => {
-        if (data?.triggerId === triggerId) {
-          settle(false, "Trigger delivery failed — try again");
-        }
-      };
-      socket.on("trigger_error", onTriggerError);
-      const errorCleanup = () => { socket.off("trigger_error", onTriggerError); };
-
-      // Send with Socket.IO ack — server only acks on successful delivery.
-      socket.emit("trigger_response", {
-        triggerId,
-        response,
-        ...(action ? { action } : {}),
-        targetSessionId: sourceSessionId ?? sessionId,
-      }, () => {
-        // Server acknowledged successful delivery
-        settle(true);
+  // Same durable endpoint as the agent's respond_to_trigger: the server marks
+  // the Delivery answered and relays it to the asking session, correlated by
+  // the asker's own id. (The card's triggerId is the parent's Delivery id —
+  // sending it straight to the child never matched its waiter.)
+  const handleTriggerResponse = React.useCallback(async (triggerId: string, response: string, action?: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/deliveries/${encodeURIComponent(triggerId)}/response`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ response, ...(action ? { action } : {}) }),
       });
-      // If no ack arrives within 5s, treat as a failed delivery
-      setTimeout(() => {
-        settle(false, "Trigger response may not have been delivered — try again");
-      }, 5000);
-    });
+      if (res.ok) return true;
+      if (res.status === 409) {
+        setLifecycleStatus("Already answered");
+        return true;
+      }
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      setLifecycleStatus(`Trigger response failed: ${data.error ?? `HTTP ${res.status}`}`);
+    } catch {
+      setLifecycleStatus("Trigger response failed — try again");
+    }
+    return false;
   }, []);
 
   // ── Spawn a new session as a specific agent ─────────────────────────────

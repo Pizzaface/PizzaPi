@@ -47,15 +47,12 @@ import {
     emitToRunner,
     getRunnerData,
     serviceFollowRoom,
-    broadcastToSessionViewers,
     markPendingRecovery,
     endSharedSession,
 } from "../sio-registry.js";
-import { isChildOfParent } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
-import { recordTriggerResponse } from "../../sessions/trigger-store.js";
 import { getHiddenModels } from "../../user-hidden-models.js";
 import { isHiddenModel } from "../../routes/model-guard.js";
 import { createLogger } from "@pizzapi/tools";
@@ -1003,7 +1000,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         // ── mcp_oauth_paste — user pasted OAuth callback URL ──────────────
         // Forward the extracted auth code to the runner's relay session so
         // the OAuth provider can complete the token exchange.
-        // Uses verified delivery (like trigger_response): acks on success
+        // Uses verified delivery: acks on success
         // so the UI can distinguish delivered pastes from dropped ones.
         socket.on("mcp_oauth_paste", async (data: any, ack?: (...args: any[]) => void) => {
             const currentSessionId = getCurrentSessionId();
@@ -1042,101 +1039,6 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     if (typeof ack === "function") ack({ ok: false, error: "Runner session unavailable" });
                 } else if (typeof ack === "function") {
                     ack({ ok: false, error: "Runner session delivery could not be verified" });
-                }
-            }
-        });
-
-        // ── trigger_response — human viewer responds to child trigger ────────
-        // Route directly to the child session via its relay socket,
-        // bypassing the parent CLI. This avoids depending on an in-memory
-        // handler in the parent to forward the response.
-        socket.on("trigger_response", async (data: any, ack?: (...args: any[]) => void) => {
-            const { triggerId, response, action, targetSessionId } = data ?? {};
-            if (!triggerId || response == null) return;
-
-            const currentSessionId = getCurrentSessionId();
-            if (!currentSessionId) return;
-
-            // Require collab mode — same gate as input/exec/model_set
-            const currentSession = await getSharedSessionSummary(currentSessionId);
-            if (!currentSession?.collabMode) return;
-
-            // If targetSessionId is explicitly provided, route to that child.
-            // Validate ownership: the target session must belong to the same user.
-            if (targetSessionId) {
-                const targetSession = await getSharedSessionSummary(targetSessionId);
-                if (!targetSession) {
-                    // Target session no longer exists (child exited) — don't ack so the
-                    // UI keeps retry controls visible, and emit trigger_error for feedback.
-                    socket.emit("trigger_error", { message: `Child session ${targetSessionId} is no longer available`, triggerId });
-                    return;
-                }
-                if (targetSession.userId !== viewerUserId) {
-                    // Security: belongs to a different user — nack with trigger_error.
-                    socket.emit("trigger_error", { message: `Target session ${targetSessionId} not found or unauthorized`, triggerId });
-                    return;
-                }
-                // Security: verify the target is a child of the current session to prevent
-                // cross-session trigger injection between unrelated sessions of the same user.
-                const childVerified = await isChildOfParent(currentSessionId, targetSessionId);
-                if (!childVerified) {
-                    socket.emit("trigger_error", { message: `Target session ${targetSessionId} is not a child of this session`, triggerId });
-                    return;
-                }
-                const triggerPayload = {
-                    triggerId,
-                    response,
-                    ...(action ? { action } : {}),
-                };
-                // Try local socket first, fall back to relay room for cross-node delivery.
-                // Only ack on successful delivery so the client can distinguish
-                // delivered responses from dropped ones.
-                const childSocket = getLocalTuiSocket(targetSessionId);
-                if (childSocket) {
-                    childSocket.emit("trigger_response" as string, triggerPayload);
-                    // Record the response in the parent's trigger history so the
-                    // TriggersPanel shows it as responded (not perpetually pending).
-                    void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
-                    broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
-                    if (typeof ack === "function") ack();
-                } else {
-                    const result = await emitToRelaySessionChecked(targetSessionId, "trigger_response", triggerPayload);
-                    if (result === "delivered") {
-                        void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
-                        broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
-                        if (typeof ack === "function") ack();
-                    } else if (result === "empty") {
-                        socket.emit("trigger_error", { message: `Failed to deliver trigger response to child session ${targetSessionId}`, triggerId });
-                    } else {
-                        socket.emit("trigger_error", { message: `Could not verify trigger response delivery to child session ${targetSessionId}`, triggerId });
-                    }
-                }
-                return;
-            }
-
-            // Fallback: forward to the parent session's TUI socket (or relay room)
-            const triggerPayloadForParent = {
-                triggerId,
-                response,
-                ...(action ? { action } : {}),
-                targetSessionId,
-            };
-            const tuiSocket = getLocalTuiSocket(currentSessionId);
-            if (tuiSocket) {
-                tuiSocket.emit("trigger_response" as string, triggerPayloadForParent);
-                void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
-                broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
-                if (typeof ack === "function") ack();
-            } else {
-                const result = await emitToRelaySessionChecked(currentSessionId, "trigger_response", triggerPayloadForParent);
-                if (result === "delivered") {
-                    void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
-                    broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
-                    if (typeof ack === "function") ack();
-                } else if (result === "empty") {
-                    socket.emit("trigger_error", { message: `Failed to deliver trigger response to session ${currentSessionId}`, triggerId });
-                } else {
-                    socket.emit("trigger_error", { message: `Could not verify trigger response delivery to session ${currentSessionId}`, triggerId });
                 }
             }
         });

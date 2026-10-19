@@ -266,6 +266,31 @@ export async function respondToDelivery(
     }
 }
 
+/** Hand an open delivery one hop up the escalation chain (parent → … → human). */
+export async function escalateDelivery(
+    deliveryId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<{ ok: boolean; escalatedTo?: string; notFound?: boolean; error?: string }> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "Not connected to relay — escalating requires a relay (PIZZAPI_RELAY_URL + PIZZAPI_API_KEY)" };
+    }
+    try {
+        const response = await d.fetch(`${baseUrl}/api/deliveries/${encodeURIComponent(deliveryId)}/escalate`, {
+            method: "POST",
+            headers: { "x-api-key": apiKey },
+        });
+        if (response.status === 404) return { ok: false, notFound: true, error: "Delivery not found" };
+        const data = (await response.json().catch(() => ({}))) as { ok?: boolean; escalatedTo?: string; error?: string };
+        if (response.ok && data.ok) return { ok: true, escalatedTo: data.escalatedTo };
+        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
 // ── Subscription helpers ──────────────────────────────────────────────────────
 
 export interface TriggerDef {
