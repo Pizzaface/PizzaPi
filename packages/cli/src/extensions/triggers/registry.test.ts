@@ -195,19 +195,6 @@ describe("renderTrigger", () => {
         });
     });
 
-    describe("lifecycle:escalation", () => {
-        it("renders escalation with reason", () => {
-            const trigger = makeTrigger({
-                type: "lifecycle:escalation",
-                payload: { reason: "Parent cannot handle this" },
-            });
-            const result = renderTrigger(trigger);
-            expect(result).toContain("🚨");
-            expect(result).toContain("Parent cannot handle this");
-            expect(result).toContain("human attention");
-        });
-    });
-
     describe("unknown type", () => {
         it("produces fallback with raw payload", () => {
             const trigger = makeTrigger({

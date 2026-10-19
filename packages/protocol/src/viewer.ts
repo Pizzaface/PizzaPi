@@ -82,14 +82,6 @@ export interface ViewerServerToClientEvents {
     generation?: number;
   }) => void;
 
-  /** Error delivering a trigger_response to a child session or relay target.
-   *  Carries the triggerId so the viewer can match the error to the original
-   *  trigger response attempt, enabling per-trigger error UI (retry buttons, etc). */
-  trigger_error: (data: {
-    message: string;
-    triggerId: string;
-  }) => void;
-
   /** Response to load_messages — a page of older messages */
   session_messages_page: (data: {
     sessionId: string;
@@ -172,16 +164,6 @@ export interface ViewerClientToServerEvents {
 
   /** Stop following a (serviceId, runnerId) pair previously joined via service_follow. */
   service_unfollow: (data: { serviceId: string; runnerId: string }) => void;
-
-  /** Human viewer responds to a pending trigger from a child session.
-   *  Supports Socket.IO ack — server calls the ack callback only on
-   *  successful delivery, so the client can detect failed sends. */
-  trigger_response: (data: {
-    triggerId: string;
-    response: string;
-    action?: string;
-    targetSessionId: string;
-  }, ack: () => void) => void;
 
   /** Submit a pasted OAuth callback URL code for an MCP server.
    *  Used when the MCP server requires a localhost redirect URI that is

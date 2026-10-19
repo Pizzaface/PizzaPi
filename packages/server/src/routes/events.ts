@@ -21,7 +21,7 @@ import { isRouteTarget, isValidEventType } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { broadcastToSessionViewers, getSharedSession } from "../ws/sio-registry.js";
-import { publishEvent } from "../events/engine.js";
+import { escalateDelivery, publishEvent } from "../events/engine.js";
 import { createEngineDeps, emitDeliveryResponseRelay, resolveOriginalTrigger } from "../events/transport.js";
 import {
   createRoute,
@@ -677,6 +677,27 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     return Response.json({ ok: true, route });
   }
 
+  // ── POST /api/deliveries/:id/escalate ──────────────────────────────────
+  // The recipient hands an open contract delivery up the chain NOW instead of
+  // waiting for its TTL: parent session first, the human (web push) at the top.
+
+  const escalateMatch = url.pathname.match(/^\/api\/deliveries\/([^/]+)\/escalate$/);
+  if (escalateMatch && req.method === "POST") {
+    const identity = await authenticate(req);
+    if (identity instanceof Response) return identity;
+    const deliveryId = decodeURIComponent(escalateMatch[1]);
+    const delivery = await getDelivery(deliveryId);
+    if (!delivery || !(await ownsSession(delivery.sessionId, identity.userId))) {
+      return Response.json({ error: "Delivery not found" }, { status: 404 });
+    }
+    const event = await getEvent(delivery.eventId);
+    if (!event?.responseContract) return badRequest("Event has no response contract");
+    const escalatedTo = await escalateDelivery(deliveryId, createEngineDeps());
+    if (!escalatedTo) return Response.json({ error: `Delivery is ${delivery.status}, not open` }, { status: 409 });
+    broadcastToSessionViewers(delivery.sessionId, "trigger_delivered", { triggerId: deliveryId });
+    return Response.json({ ok: true, deliveryId, escalatedTo });
+  }
+
   // ── POST /api/deliveries/:id/response ──────────────────────────────────
 
   const respondMatch = url.pathname.match(/^\/api\/deliveries\/([^/]+)\/response$/);
@@ -732,9 +753,18 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
       return Response.json({ error: "Delivery already responded" }, { status: 409 });
     }
 
-    // A human response to an escalation also resolves every still-open
-    // Delivery for the original event. Otherwise its contract sweep can
-    // escalate again after the answer has already been given.
+    // First answer wins: an escalated event has a delivery per hop (child's
+    // parent, grandparent, ...). Close the rest so a later hop can't answer
+    // again and the sweep can't re-escalate an answered question.
+    const siblings = (await deliveriesForEvents([event.eventId])).filter((d) => d.deliveryId !== deliveryId);
+    await Promise.all(siblings.map((d) => updateDelivery(d.deliveryId, {
+      status: "responded",
+      respondedAt,
+      response,
+    }, { guard: ["pending", "inflight", "delivered", "expired", "escalated"] })));
+
+    // Legacy lifecycle:escalation events (pre escalate endpoint) point at the
+    // original trigger: resolve every still-open Delivery for it too.
     // The parent tracks received triggers by deliveryId (toWireEnvelope puts
     // the deliveryId in `triggerId`), so originalTriggerId is normally the
     // original DELIVERY id; legacy senders may pass the child's fireId.

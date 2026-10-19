@@ -277,7 +277,9 @@ export function MultipleChoiceQuestions({
           const inputId = `${groupName}-opt-${origIdx}`;
           return (
             <label key={origIdx} htmlFor={inputId} className={cn(
-              "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
+              // relative: contains the sr-only input. Without it the input is positioned
+              // against a far ancestor and focusing it scrolls the transcript away.
+              "relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
               isSelected
                 ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
                 : "border border-transparent hover:border-violet-500/20 hover:bg-violet-500/[0.07] text-foreground/70 hover:text-foreground/90",
@@ -326,7 +328,9 @@ export function MultipleChoiceQuestions({
           const inputId = `${groupName}-opt-${origIdx}`;
           return (
             <label key={origIdx} htmlFor={inputId} className={cn(
-              "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
+              // relative: contains the sr-only input. Without it the input is positioned
+              // against a far ancestor and focusing it scrolls the transcript away.
+              "relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
               isSelected
                 ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
                 : "border border-transparent hover:border-violet-500/20 hover:bg-violet-500/[0.07] text-foreground/70 hover:text-foreground/90",
@@ -448,7 +452,9 @@ export function MultipleChoiceQuestions({
     <label
       htmlFor={`${groupName}-write`}
       className={cn(
-        "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
+        // relative: contains the sr-only input. Without it the input is positioned
+              // against a far ancestor and focusing it scrolls the transcript away.
+              "relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
         isActive
           ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
           : "border border-dashed border-violet-500/20 hover:border-violet-400/30 hover:bg-violet-500/[0.07] text-violet-300/80 hover:text-violet-200",

@@ -43,6 +43,7 @@ const modsPromise = (async () => {
       if (id === "offline-src") return { userId: "u1", runnerId: "runner-1" };
       if (id === "owned" || id === "child") return { userId: "u1", runnerId: "runner-1" };
       if (id === "owned-2") return { userId: "u1", runnerId: "runner-2" };
+      if (id === "linked-child") return { userId: "u1", runnerId: "runner-1", parentSessionId: "owned" };
       if (id === "runnerless") return { userId: "u1" };
       return null;
     },
@@ -655,6 +656,52 @@ describe("events HTTP surface", () => {
     const pending = await store.pendingResponseRelaysFor("offline-src");
     expect(pending.map((d: any) => d.deliveryId)).toEqual([deliveries[0].deliveryId]);
     expect(await store.pendingResponseRelaysFor("owned")).toHaveLength(0);
+  });
+
+  it("escalate hands a delivery to the parent; the first answer anywhere wins and reaches the asker", async () => {
+    // "child" asks "linked-child" (its parent), whose own parent is "owned".
+    const pub = await call(routes, "POST", "/api/events", {
+      type: "lifecycle:ask_question",
+      payload: { question: "Which branch?" },
+      responseContract: { escalate: true, ttlMs: 60_000 },
+      fireId: "child-question-1",
+      source: { kind: "session", id: "child" },
+      target: { sessionId: "linked-child" },
+    });
+    const first = ((await pub!.json()) as any).deliveries[0].deliveryId;
+
+    const esc = await call(routes, "POST", `/api/deliveries/${first}/escalate`);
+    expect(esc!.status).toBe(200);
+    expect(((await esc!.json()) as any).escalatedTo).toBe("owned");
+    expect((await store.getDelivery(first))?.status).toBe("escalated");
+    // Escalating again is a no-op conflict, not a second hop.
+    expect((await call(routes, "POST", `/api/deliveries/${first}/escalate`))!.status).toBe(409);
+
+    const hop = (await store.listDeliveries({ sessionId: "owned" })).find((d: any) => d.deliveryId !== first);
+    expect(hop).toBeDefined();
+    const ok = await call(routes, "POST", `/api/deliveries/${hop!.deliveryId}/response`, { response: "main" });
+    expect(ok!.status).toBe(200);
+    // Answer correlates with the asker's own id, not either delivery id.
+    expect(responses.find((r) => r.event === "trigger_response")!.data.triggerId).toBe("child-question-1");
+    // The escalated copy is closed: the middle agent can't answer it again.
+    expect((await store.getDelivery(first))?.status).toBe("responded");
+    expect((await call(routes, "POST", `/api/deliveries/${first}/response`, { response: "late" }))!.status).toBe(409);
+  });
+
+  it("escalate at the top of the chain goes to the human and stays answerable", async () => {
+    const pub = await call(routes, "POST", "/api/events", {
+      type: "lifecycle:ask_question",
+      payload: { question: "Ship it?" },
+      responseContract: { escalate: true },
+      fireId: "child-question-2",
+      source: { kind: "session", id: "child" },
+      target: { sessionId: "owned" },
+    });
+    const id = ((await pub!.json()) as any).deliveries[0].deliveryId;
+    const esc = await call(routes, "POST", `/api/deliveries/${id}/escalate`);
+    expect(((await esc!.json()) as any).escalatedTo).toBe("human");
+    expect((await call(routes, "POST", `/api/deliveries/${id}/response`, { response: "yes" }))!.status).toBe(200);
+    expect((await call(routes, "POST", "/api/deliveries/dlv_missing/escalate"))!.status).toBe(404);
   });
 
   it("rejects double-responds (409), foreign deliveries (404), and invalid actions (400)", async () => {

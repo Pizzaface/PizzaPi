@@ -25,6 +25,7 @@ import {
     updateTriggerSubscription,
     publishEvent,
     clearTriggerHistory,
+    escalateDelivery,
 } from "./trigger-client.js";
 import type { TriggerClientDeps } from "./trigger-client.js";
 
@@ -883,3 +884,24 @@ describe("clearTriggerHistory", () => {
 });
 
 
+
+describe("escalateDelivery", () => {
+    test("POSTs to the delivery escalate endpoint and returns the next hop", async () => {
+        let seen: { url: string; init?: RequestInit } | null = null;
+        const result = await escalateDelivery("dlv_1", httpOnlyDeps({
+            fetch: async (url, init) => {
+                seen = { url, init };
+                return mockFetch(200, { ok: true, escalatedTo: "human" })(url, init);
+            },
+        }));
+        expect(result).toEqual({ ok: true, escalatedTo: "human" });
+        expect(seen!.url).toBe("http://localhost:7492/api/deliveries/dlv_1/escalate");
+        expect(seen!.init?.method).toBe("POST");
+    });
+
+    test("surfaces 404 and conflict errors", async () => {
+        expect(await escalateDelivery("x", httpOnlyDeps({ fetch: mockFetch(404, {}) }))).toMatchObject({ ok: false, notFound: true });
+        expect(await escalateDelivery("x", httpOnlyDeps({ fetch: mockFetch(409, { error: "Delivery is responded, not open" }) })))
+            .toEqual({ ok: false, error: "Delivery is responded, not open" });
+    });
+});

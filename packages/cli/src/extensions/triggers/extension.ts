@@ -4,7 +4,7 @@
 // Provides three tools:
 //   - send_message: Send a steering message to a linked parent/child session
 //   - respond_to_trigger: Respond to a pending trigger from a child
-//   - escalate_trigger: Escalate a child's trigger to the human viewer
+//   - escalate_trigger: Hand a child's trigger up the chain (parent agent → human)
 // ============================================================================
 
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
@@ -24,6 +24,7 @@ import {
     updateTriggerSubscription,
     publishEvent,
     respondToDelivery,
+    escalateDelivery,
 } from "../trigger-client.js";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
 
@@ -669,44 +670,37 @@ export const triggersExtension: ExtensionFactory = (pi) => {
     pi.registerTool({
         name: "escalate_trigger",
         label: "Escalate Trigger",
-        description: "Escalate a child's trigger to the human viewer.",
+        description:
+            "Hand a pending child trigger (question, plan review) up the chain instead of answering it: " +
+            "to your own parent agent if you are a child session, otherwise to the human viewer (push notification). " +
+            "Do NOT also answer it yourself afterwards — whoever it was escalated to answers the child directly.",
         parameters: {
             type: "object",
             properties: {
                 triggerId: { type: "string", description: "The trigger ID to escalate" },
-                context: { type: "string", description: "Additional context for the human" },
             },
             required: ["triggerId"],
         } as any,
         async execute(_toolCallId, rawParams) {
-            const params = rawParams as { triggerId: string; context?: string };
-            const pending = receivedTriggers.get(params.triggerId);
-            if (!pending) {
+            const params = rawParams as { triggerId: string };
+            if (!receivedTriggers.has(params.triggerId)) {
                 return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}.` }], details: null as any };
             }
-            // Publish an escalation Event to the parent's own session so the
-            // web UI surfaces it to the human viewer (not back to the child).
-            // No re-escalation: an escalation event never escalates again.
-            const ownId = getOwnSessionId();
-            if (!ownId) {
-                return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }], details: null as any };
-            }
-            const result = await publishEvent({
-                type: "lifecycle:escalation",
-                payload: { reason: params.context ?? "Parent escalated", originalTriggerId: params.triggerId },
-                summary: `Escalation: ${pending.type}`,
-                fireId: `escalate:${params.triggerId}`,
-                responseContract: { escalate: false },
-                target: { sessionId: ownId, deliverAs: "steer" },
-                source: { kind: "session", id: pending.sourceSessionId, name: "escalation" },
-            });
+            const result = await escalateDelivery(params.triggerId);
             if (!result.ok) {
                 return { content: [{ type: "text" as const, text: `Error escalating trigger ${params.triggerId}: ${result.error ?? "unknown error"}` }], details: null as any };
             }
-            // Don't delete from receivedTriggers — the trigger is still pending
-            // and respond_to_trigger needs the original sourceSessionId to route
-            // the response back to the child (not the parent).
-            return { content: [{ type: "text" as const, text: `Trigger ${params.triggerId} escalated to human` }], details: null as any };
+            // Answering is now someone else's job; a late respond_to_trigger
+            // from us would race the real answer.
+            markTriggerHandled(params.triggerId);
+            const to = result.escalatedTo === "human" ? "the human viewer" : `parent session ${result.escalatedTo}`;
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Trigger ${params.triggerId} escalated to ${to}. They answer the child directly — do not respond to it yourself.`,
+                }],
+                details: null as any,
+            };
         },
         renderCall: (args: any, theme: any) => {
             const tid = shortId(args.triggerId ?? "", 8);
@@ -722,7 +716,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             if (text.startsWith("Error:")) {
                 return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
             }
-            return new Text(theme.fg("warning", "↑ ") + theme.fg("dim", "trigger escalated to human"), 0, 0);
+            return new Text(theme.fg("warning", "↑ ") + theme.fg("dim", text.includes("human viewer") ? "escalated to human" : "escalated to parent"), 0, 0);
         },
     });
 
