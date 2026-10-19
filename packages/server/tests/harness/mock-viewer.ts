@@ -30,12 +30,6 @@ export interface MockViewer {
     // Send actions
     sendInput(text: string, attachments?: Attachment[]): void;
     sendExec(id: string, command: string): void;
-    sendTriggerResponse(
-        triggerId: string,
-        response: string,
-        targetSessionId: string,
-        action?: string,
-    ): void;
     sendResync(): void;
 
     // Received events
@@ -210,17 +204,6 @@ async function attemptBuildViewer(
 
         sendExec(id: string, command: string): void {
             socket.emit("exec", { id, command });
-        },
-
-        sendTriggerResponse(
-            triggerId: string,
-            response: string,
-            targetSessionId: string,
-            action?: string,
-        ): void {
-            socket.emit("trigger_response", { triggerId, response, targetSessionId, action }, () => {
-                // ack callback — no-op for tests unless explicitly tested
-            });
         },
 
         sendResync(): void {

@@ -390,7 +390,6 @@ interface MockViewer {
     // Send actions
     sendInput(text: string, attachments?: Attachment[]): void;
     sendExec(id: string, command: string): void;
-    sendTriggerResponse(triggerId: string, response: string, targetSessionId: string, action?: string): void;
     sendResync(): void;
 
     // Received events (auto-buffered from connect)
