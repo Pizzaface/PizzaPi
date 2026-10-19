@@ -15,6 +15,7 @@ const publishEventMock = mock(async (_params: unknown): Promise<any> => ({
 mock.module("../trigger-client.js", () => ({
     publishEvent: publishEventMock,
     respondToDelivery: async () => ({ ok: true, relayed: false }),
+    escalateDelivery: async () => ({ ok: true, escalatedTo: "human" }),
     fireTrigger: async () => ({ ok: true, method: "http" }),
     broadcastTrigger: async () => ({ ok: true }),
     subscribeTrigger: async () => ({ ok: true }),
