@@ -1,7 +1,7 @@
 import * as React from "react";
 import { resolveTunnelTarget } from "@/hooks/useTunnelSrc";
 import { PlaybackQueue, startMic } from "./audio";
-import { replyText, SpeechChunker } from "./speech";
+import { replyText, SpeechChunker, stripFences } from "./speech";
 import { fetchTunnelWithFallback } from "./tunnel-fetch";
 import { disconnected, SttSocket, sttSocketUrl } from "./stt-socket";
 
@@ -31,6 +31,8 @@ export interface LiveVoiceState {
     /** True while userCaption is a live hypothesis that may still change. */
     userCaptionPartial: boolean;
     agentCaption: string;
+    /** How much of the current reply (fence-stripped offset) has finished being spoken. */
+    revealed: number;
     /** e.g. "Downloading voice models… 42%" while starting. */
     status: string;
     error: string | null;
@@ -55,6 +57,10 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const [userCaptionPartial, setUserCaptionPartial] = React.useState(false);
     const [sttOpen, setSttOpen] = React.useState(false);
     const [agentCaption, setAgentCaption] = React.useState("");
+    // Infinity until the first spoken turn: text already there when Live opened is shown in full.
+    const [revealed, setRevealed] = React.useState(Infinity);
+    const turnRef = React.useRef(-1); // index of the user message the current reply answers
+    const queuedEndRef = React.useRef(0); // reply offset where the last queued sentence ends
     const levelRef = React.useRef(0);
 
     // Latest props for audio callbacks that outlive renders.
@@ -152,7 +158,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     }, [base, api, o.sessionId]);
 
     const speak = React.useCallback(
-        (sentence: string) => {
+        (sentence: string, end: number) => {
             queueRef.current?.enqueue(async () => {
                 const r = await api("api/tts", {
                     method: "POST",
@@ -161,7 +167,10 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                 });
                 if (!r.ok) throw new Error(`tts ${r.status}`);
                 return r.arrayBuffer();
-            }, () => setAgentCaption(sentence));
+            }, () => {
+                setAgentCaption(sentence);
+                setRevealed(end); // show the sentence in the feed as it starts playing
+            });
         },
         [api],
     );
@@ -195,7 +204,11 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         const ctx = o.audioContext;
         const queue = new PlaybackQueue(
             ctx,
-            () => setPlaying(false),
+            () => {
+                setPlaying(false);
+                // Queue drained (not just paused): everything queued has been spoken or skipped.
+                if (!queue.busy) setRevealed(queuedEndRef.current);
+            },
             () => setPlaying(true),
         );
         queueRef.current = queue;
@@ -313,16 +326,30 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const toolRunning = (o.activeToolCalls?.size ?? 0) > 0;
     React.useEffect(() => {
         const text = replyText(o.messages);
+        const turn = o.messages.findLastIndex((m) => m.role === "user");
         if (!chunkerRef.current) {
             // Opening Live mid-reply: don't read out what's already on screen.
             chunkerRef.current = new SpeechChunker();
             chunkerRef.current.flush(text);
+            queuedEndRef.current = stripFences(text).length;
+            turnRef.current = turn;
             return;
+        }
+        // A new turn restarts reply offsets; hide its text until it is spoken.
+        if (turn !== turnRef.current) {
+            turnRef.current = turn;
+            queuedEndRef.current = 0;
+            setRevealed(0);
         }
         if (!ready) return;
         const c = chunkerRef.current;
-        const sentences = o.agentActive && !toolRunning ? c.push(text) : [...c.push(text), ...c.flush(text)];
-        for (const s of sentences) speak(s);
+        const queue = (sentences: string[]) =>
+            sentences.forEach((s, i) => {
+                speak(s, c.ends[i]!);
+                queuedEndRef.current = c.ends[i]!;
+            });
+        queue(c.push(text));
+        if (!o.agentActive || toolRunning) queue(c.flush(text));
     }, [o.messages, o.agentActive, toolRunning, ready, speak]);
 
     React.useEffect(() => () => void o.audioContext.close().catch(() => {}), [o.audioContext]);
@@ -349,5 +376,5 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                   : "listening";
 
     const shownStatus = ready && micReady && !sttOpen ? "Connecting to speech service…" : status;
-    return { phase, muted, setMuted, userCaption, userCaptionPartial, agentCaption, status: shownStatus, error, levelRef };
+    return { phase, muted, setMuted, userCaption, userCaptionPartial, agentCaption, revealed, status: shownStatus, error, levelRef };
 }

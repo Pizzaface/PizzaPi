@@ -8,6 +8,7 @@ describe("SpeechChunker", () => {
         expect(c.push("Sure, running the tests. Three fa")).toEqual(["Sure, running the tests."]);
         expect(c.push("Sure, running the tests. Three failed! All in relay")).toEqual(["Three failed!"]);
         expect(c.flush("Sure, running the tests. Three failed! All in relay")).toEqual(["All in relay"]);
+        expect(c.ends).toEqual([51]);
     });
 
     test("never speaks fenced code, even while the fence is still open", () => {

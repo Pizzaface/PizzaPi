@@ -34,7 +34,7 @@ export function replyText(messages: ReadonlyArray<{ role: string; content?: unkn
 }
 
 /** Remove fenced code (complete or still-open) so it is never spoken. */
-function stripFences(md: string): string {
+export function stripFences(md: string): string {
     const parts = md.split("```");
     // Even indexes are prose; odd indexes are inside a fence.
     return parts.filter((_, i) => i % 2 === 0).join("\n");
@@ -67,6 +67,8 @@ const BOUNDARY = /[.!?…]["')\]]?(?=\s)|\n+/g;
 
 export class SpeechChunker {
     #spokenUpTo = 0; // index into the fence-stripped text
+    /** Fence-stripped offset where each sentence from the last push/flush ends. */
+    ends: number[] = [];
 
     /** Feed the full text so far; returns sentences completed since last call. */
     push(fullText: string): string[] {
@@ -79,29 +81,35 @@ export class SpeechChunker {
         BOUNDARY.lastIndex = this.#spokenUpTo;
         for (let m = BOUNDARY.exec(prose); m; m = BOUNDARY.exec(prose)) end = m.index + m[0].length;
         if (openFence) end = Math.max(end, prose.length);
-        if (end <= this.#spokenUpTo) return [];
-        const chunk = prose.slice(this.#spokenUpTo, end);
-        this.#spokenUpTo = end;
-        return split(chunk);
+        if (end <= this.#spokenUpTo) return (this.ends = []);
+        return this.#take(prose, end);
     }
 
     /** The reply finished: speak whatever is left. */
     flush(fullText: string): string[] {
         const prose = stripFences(fullText);
-        const rest = prose.slice(Math.min(this.#spokenUpTo, prose.length));
-        this.#spokenUpTo = prose.length;
-        return split(rest);
+        this.#spokenUpTo = Math.min(this.#spokenUpTo, prose.length);
+        return this.#take(prose, prose.length);
     }
-}
 
-function split(chunk: string): string[] {
-    const out: string[] = [];
-    let start = 0;
-    BOUNDARY.lastIndex = 0;
-    for (let m = BOUNDARY.exec(chunk); m; m = BOUNDARY.exec(chunk)) {
-        out.push(chunk.slice(start, m.index + m[0].length));
-        start = m.index + m[0].length;
+    #take(prose: string, end: number): string[] {
+        const base = this.#spokenUpTo;
+        const chunk = prose.slice(base, end);
+        this.#spokenUpTo = end;
+        const out: string[] = [];
+        this.ends = [];
+        let start = 0;
+        const add = (stop: number) => {
+            const s = toSpeakable(chunk.slice(start, stop));
+            if (/[\p{L}\p{N}]/u.test(s)) {
+                out.push(s);
+                this.ends.push(base + stop);
+            }
+            start = stop;
+        };
+        BOUNDARY.lastIndex = 0;
+        for (let m = BOUNDARY.exec(chunk); m; m = BOUNDARY.exec(chunk)) add(m.index + m[0].length);
+        add(chunk.length);
+        return out;
     }
-    out.push(chunk.slice(start));
-    return out.map(toSpeakable).filter((s) => /[\p{L}\p{N}]/u.test(s));
 }

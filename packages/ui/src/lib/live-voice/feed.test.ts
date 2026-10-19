@@ -21,3 +21,19 @@ test("Live feed shows what was said and what each tool is doing", () => {
     ]);
     expect(liveFeed(messages, undefined, 2).map((i) => i.text)).toEqual(["Edited audio.ts", "Read notes.md"]);
 });
+
+test("Live feed shows the current reply in full, but only as far as it has been spoken", () => {
+    const messages = [
+        { role: "user", content: "Earlier" },
+        { role: "assistant", content: "A long earlier answer that is not trimmed any more, even though it runs well past the old one-line limit of the feed." },
+        { role: "user", content: "Status?" },
+        { role: "assistant", content: [{ type: "text", text: "First. Second." }, { type: "toolCall", id: "t", name: "read", arguments: { path: "a.ts" } }] },
+        { role: "assistant", content: "Third." },
+    ];
+    const agent = (revealed?: number) => liveFeed(messages, undefined, 8, revealed).filter((i) => i.kind === "agent").map((i) => i.text);
+    expect(agent()[0]).toEndWith("limit of the feed.");
+    expect(agent(0)).toHaveLength(1); // nothing of the current reply yet
+    expect(agent(6)).toEqual([agent()[0], "First."]);
+    expect(agent(16)).toEqual([agent()[0], "First. Second."]); // "Third." starts after the "\n\n" join
+    expect(agent(22)).toEqual([agent()[0], "First. Second.", "Third."]);
+});
