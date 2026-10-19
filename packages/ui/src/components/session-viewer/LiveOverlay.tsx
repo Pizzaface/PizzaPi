@@ -55,7 +55,7 @@ export function LiveOverlay({ onClose: close, sessionName, ...opts }: LiveVoiceO
     }, [onClose]);
 
     const label = live.phase === "starting" ? live.status : live.muted ? "Muted" : PHASE_LABEL[live.phase];
-    const feed = React.useMemo(() => liveFeed(opts.messages, opts.activeToolCalls), [opts.messages, opts.activeToolCalls]);
+    const feed = React.useMemo(() => liveFeed(opts.messages, opts.activeToolCalls, 8, live.revealed), [opts.messages, opts.activeToolCalls, live.revealed]);
     const feedRef = React.useRef<HTMLOListElement>(null);
     React.useEffect(() => {
         if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
@@ -112,7 +112,7 @@ export function LiveOverlay({ onClose: close, sessionName, ...opts }: LiveVoiceO
                     <ol
                         ref={feedRef}
                         aria-label="Recent activity"
-                        className="flex max-h-48 w-full max-w-md shrink-0 flex-col gap-1.5 overflow-y-auto text-left text-xs [mask-image:linear-gradient(to_bottom,transparent,black_2rem)]"
+                        className="flex max-h-56 w-full max-w-md shrink-0 flex-col gap-1.5 overflow-y-auto overscroll-contain pr-1 text-left text-xs [mask-image:linear-gradient(to_bottom,transparent,black_2rem)] [scrollbar-width:thin] [scrollbar-color:var(--color-border)_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent"
                     >
                         {feed.map((item) => (
                             <li key={item.key} className="flex min-w-0 items-start gap-2">
@@ -133,7 +133,7 @@ export function LiveOverlay({ onClose: close, sessionName, ...opts }: LiveVoiceO
                                 ) : (
                                     <>
                                         <span className="w-7 shrink-0 pt-px text-center text-[0.6rem] font-semibold uppercase text-muted-foreground">{item.kind === "user" ? "You" : "AI"}</span>
-                                        <span className={cn("line-clamp-2 min-w-0", item.kind === "user" ? "text-muted-foreground" : "text-foreground/80")}>{item.text}</span>
+                                        <span className={cn("min-w-0", item.kind === "user" ? "line-clamp-2 text-muted-foreground" : "whitespace-pre-line text-foreground/80")}>{item.text}</span>
                                     </>
                                 )}
                             </li>

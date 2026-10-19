@@ -202,6 +202,11 @@ export class PlaybackQueue {
         this.analyser.connect(ctx.destination);
     }
 
+    /** Clips are playing, paused or still queued. */
+    get busy() {
+        return this.#running;
+    }
+
     get playing() {
         return this.#running && !this.#paused;
     }
