@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
-import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
+import type { RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
@@ -134,8 +134,8 @@ import {
 import { createLogger } from "@pizzapi/tools";
 import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession, shouldAcceptDisconnected } from "@/lib/viewer-switch";
 
-// Lazy-loaded low-frequency surfaces. Auth, session sidebar/viewer, banners,
-// and loading/error UI remain eager so critical paths stay fast.
+// Keep the app shell eager; load the transcript and secondary surfaces separately.
+const LazySessionViewer = React.lazy(() => import("@/components/SessionViewer").then((m) => ({ default: m.SessionViewer })));
 const LazyUserPreferencesPanel = React.lazy(() => import("@/components/UserPreferencesPanel").then((m) => ({ default: m.UserPreferencesPanel })));
 const LazyApiKeyManager = React.lazy(() => import("@/components/ApiKeyManager").then((m) => ({ default: m.ApiKeyManager })));
 const LazyRunnerTokenManager = React.lazy(() => import("@/components/RunnerTokenManager").then((m) => ({ default: m.RunnerTokenManager })));
@@ -5762,7 +5762,8 @@ export function App() {
                       <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined} runnerOnline={runnersStatus === "connected" && activeRunnerInfo !== null} sessionCwd={activeSessionInfo?.cwd}>
                       <PizzaPiNavProvider actions={pizzaPiNavActions}>
                       <SessionNamesProvider value={sessionNamesMap}>
-                      <SessionViewer
+                      <Suspense fallback={<PanelFallback label="Session" />}>
+                      <LazySessionViewer
                         promptRef={promptRef}
                         sessionId={activeSessionId}
                         sessionName={sessionName}
@@ -5942,6 +5943,7 @@ export function App() {
                         onButtonDragStart={handleButtonDragStart}
                         toolbarPositions={buttonPositions.positions}
                       />
+                      </Suspense>
                       </SessionNamesProvider>
                       </PizzaPiNavProvider>
                       </SigilProvider>
