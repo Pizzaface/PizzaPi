@@ -82,4 +82,8 @@ test("isEcho matches the agent's own words, not new requests", () => {
     expect(isEcho("I'll check the bill", spoken)).toBe(true); // tolerates a misheard word
     expect(isEcho("stop, deploy it instead", spoken)).toBe(false);
     expect(isEcho("", spoken)).toBe(false);
+    expect(isEcho("time and hit", spoken)).toBe(false); // 3+ words still need overlap
+    expect(isEcho("Nat, see", spoken)).toBe(true); // short garbled fragment
+    expect(isEcho("stop", spoken)).toBe(false);
+    expect(isEcho("wait please", spoken)).toBe(false);
 });

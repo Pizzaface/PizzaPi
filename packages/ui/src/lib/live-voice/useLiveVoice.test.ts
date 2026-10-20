@@ -124,14 +124,12 @@ for (const utterance of ["noise", "discard", "empty", "echo", "real", "mute", "f
         await act(async () => { rerender({ text: "First sentence. Second sentence. Third sentence." }); await settle(); });
         expect(sources).toHaveLength(1);
         if (utterance === "drop") {
-            // Socket drops mid-speech: the reply resumes now, not when the VAD ends the turn.
+            // Socket drops mid-speech: the reply never stopped, and nothing is sent.
             await act(async () => { FakeSttWs.all[0]!.onclose?.(new CloseEvent("close")); await settle(); });
-            expect(sources).toHaveLength(2);
-            expect(sources[1]!.offset).toBe(2);
             await act(async () => { await feed(8, 0.001); });
             expect(sent).toEqual([]);
             expect(result.current.error).toBeNull();
-            expect(sources).toHaveLength(2);
+            expect(sources).toHaveLength(1);
             return;
         }
         if (utterance === "mute") act(() => result.current.setMuted(true));
@@ -148,9 +146,11 @@ for (const utterance of ["noise", "discard", "empty", "echo", "real", "mute", "f
         } else {
             expect(sent).toEqual([]);
             expect(result.current.phase).toBe(utterance === "failure" ? "error" : "speaking");
-            const current = nonSpeech ? 0 : 1;
-            expect(sources).toHaveLength(current + 1);
-            expect(sources[current]!.offset).toBe(nonSpeech ? 0 : 2);
+            // Speech heard while the agent is audible may be its own echo: playback
+            // keeps going (never restarted) until a transcript confirms the user.
+            const current = 0;
+            expect(sources).toHaveLength(1);
+            expect(sources[0]!.offset).toBe(0);
             await act(async () => { sources[current]!.onended?.(); await settle(); });
             expect(sources).toHaveLength(current + 2);
             await act(async () => { sources[current + 1]!.onended?.(); await settle(); });
