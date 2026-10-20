@@ -94,8 +94,8 @@ export class SpeechChunker {
         const prose = stripFences(fullText);
         // An unclosed fence means the tail is code: don't treat it as prose yet.
         const openFence = (fullText.split("```").length - 1) % 2 === 1;
-        // Text shrank (rehydrate, edit): stay silent rather than re-reading.
-        if (prose.length < this.#spokenUpTo) this.#spokenUpTo = prose.length;
+        // Text shrank (rehydrate, edit): stay silent, and keep the position so it
+        // isn't read again when the text comes back. New turns use a new chunker.
         let end = -1;
         BOUNDARY.lastIndex = this.#spokenUpTo;
         for (let m = BOUNDARY.exec(prose); m; m = BOUNDARY.exec(prose)) end = m.index + m[0].length;
@@ -107,7 +107,7 @@ export class SpeechChunker {
     /** The reply finished: speak whatever is left. */
     flush(fullText: string): string[] {
         const prose = stripFences(fullText);
-        this.#spokenUpTo = Math.min(this.#spokenUpTo, prose.length);
+        if (prose.length <= this.#spokenUpTo) return (this.ends = []);
         return this.#take(prose, prose.length);
     }
 

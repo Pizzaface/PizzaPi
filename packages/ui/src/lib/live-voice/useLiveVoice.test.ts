@@ -103,7 +103,7 @@ for (const utterance of ["noise", "discard", "empty", "echo", "real", "mute", "f
         const { result, rerender } = renderHook(({ text }) => useLiveVoice({
             audioContext: ctx as unknown as AudioContext, micStream: stream,
             sessionId: "test", port: 1234, agentActive: false,
-            messages: [{ role: "assistant", content: text }],
+            messages: [{ role: "user", content: "go" }, { role: "assistant", content: text }],
             send: (text) => { sent.push(text); return true; },
         }), { initialProps: { text: "" } });
         await act(settle);
@@ -186,7 +186,7 @@ test("Live speaks the sentence before a tool call without waiting for more text"
     const { rerender } = renderHook(({ text, tools }) => useLiveVoice({
         audioContext: ctx as unknown as AudioContext, micStream: stream,
         sessionId: "test", port: 1234, agentActive: true, activeToolCalls: tools,
-        messages: [{ role: "assistant", content: text }],
+        messages: [{ role: "user", content: "go" }, { role: "assistant", content: text }],
         send: () => true,
     }), { initialProps: { text: "", tools: new Map<string, string>() } });
     await act(settle);
@@ -269,3 +269,42 @@ for (const ending of ["final", "disconnect", "mute"] as const) {
         }
     });
 }
+
+test("reopening/reconnecting (messages empty, then the old reply returns) does not re-read it", async () => {
+    const spoken: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/tunnel-token")) return Response.json({ url: "/api/tunnel/auth/test/" });
+        if (url.endsWith("/api/status")) return Response.json({ stt: "ready", tts: "ready" });
+        if (url.endsWith("/api/tts")) {
+            spoken.push(JSON.parse(String(init?.body)).text);
+            return new Response(new ArrayBuffer(1));
+        }
+        return Response.json({});
+    }) as typeof fetch;
+    globalThis.requestAnimationFrame = () => 1;
+    globalThis.cancelAnimationFrame = () => {};
+    const node = () => ({ connect() { return this; }, disconnect() {}, gain: { value: 0 }, fftSize: 256, onaudioprocess: null });
+    const ctx = {
+        sampleRate: 16000, currentTime: 0, destination: {}, close: async () => {},
+        createAnalyser: node, createMediaStreamSource: node, createScriptProcessor: node, createGain: node,
+        decodeAudioData: async () => ({ duration: 1, length: 100, sampleRate: 100, numberOfChannels: 1, getChannelData: () => new Float32Array(100).fill(0.1) }),
+        createBufferSource: () => ({ connect() {}, disconnect() {}, start() {}, stop() {}, onended: null }),
+    };
+    const stream = Promise.resolve({ getAudioTracks: () => [], getTracks: () => [] } as unknown as MediaStream);
+    type M = { role: string; content?: unknown };
+    const history: M[] = [{ role: "user", content: "hi" }, { role: "assistant", content: "Old reply. Already heard." }];
+    const { rerender } = renderHook(({ messages }) => useLiveVoice({
+        audioContext: ctx as unknown as AudioContext, micStream: stream,
+        sessionId: "test", port: 1234, agentActive: false, messages, send: () => true,
+    }), { initialProps: { messages: [] as M[] } });
+    await act(settle);
+    await act(async () => { rerender({ messages: history }); await settle(); });
+    await act(async () => { rerender({ messages: [] }); await settle(); });
+    await act(async () => { rerender({ messages: [{ role: "assistant", content: "Already heard." }, ...history.slice(1)] }); await settle(); });
+    await act(async () => { rerender({ messages: history }); await settle(); });
+    expect(spoken).toEqual([]);
+    await act(async () => { rerender({ messages: [...history, { role: "user", content: "next" }] }); await settle(); });
+    await act(async () => { rerender({ messages: [...history, { role: "user", content: "next" }, { role: "assistant", content: "New answer." }] }); await settle(); });
+    expect(spoken).toEqual(["New answer."]);
+});
