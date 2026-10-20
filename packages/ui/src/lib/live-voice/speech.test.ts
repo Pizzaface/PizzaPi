@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assistantText, replyText, SpeechChunker, toSpeakable } from "./speech";
+import { assistantText, isEcho, replyText, SpeechChunker, toSpeakable } from "./speech";
 
 describe("SpeechChunker", () => {
     test("emits only completed sentences as text streams in", () => {
@@ -74,4 +74,12 @@ describe("assistantText", () => {
         expect(assistantText("plain")).toBe("plain");
         expect(assistantText(undefined)).toBe("");
     });
+});
+
+test("isEcho matches the agent's own words, not new requests", () => {
+    const spoken = "I'll **run the tests** now. Then I'll check the build.";
+    expect(isEcho("run the tests now", spoken)).toBe(true);
+    expect(isEcho("I'll check the bill", spoken)).toBe(true); // tolerates a misheard word
+    expect(isEcho("stop, deploy it instead", spoken)).toBe(false);
+    expect(isEcho("", spoken)).toBe(false);
 });

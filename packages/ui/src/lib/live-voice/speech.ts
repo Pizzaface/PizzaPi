@@ -33,6 +33,21 @@ export function replyText(messages: ReadonlyArray<{ role: string; content?: unkn
     return parts.join("\n\n");
 }
 
+const words = (s: string) => s.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
+
+/**
+ * True when a transcript is mostly the agent's own recent speech picked up by
+ * the mic (speakerphone echo the browser's AEC missed, common on phones).
+ * ponytail: word-overlap heuristic; a user repeating the agent's words verbatim
+ * while it talks is ignored. Upgrade to output-reference AEC if that matters.
+ */
+export function isEcho(transcript: string, spoken: string): boolean {
+    const heard = words(transcript);
+    if (!heard.length) return false;
+    const said = new Set(words(spoken));
+    return heard.filter((w) => said.has(w)).length / heard.length >= 0.75;
+}
+
 /** Remove fenced code (complete or still-open) so it is never spoken. */
 export function stripFences(md: string): string {
     const parts = md.split("```");

@@ -162,6 +162,56 @@ export async function startMic(
     };
 }
 
+/**
+ * Play Live's voice through a local WebRTC call instead of straight to the
+ * speakers. On Android, Chromium's echo canceller only references call audio,
+ * so Web Audio media playback leaks back into the mic. Returns the node to
+ * play into, or null (keep ctx.destination) if the loopback can't start.
+ * Setup takes ~1.5–3.5 s in desktop Chromium; playback stays direct until then.
+ */
+export async function callAudioOutput(ctx: AudioContext, timeoutMs = 10_000): Promise<{ node: AudioNode; close(): void } | null> {
+    if (typeof RTCPeerConnection === "undefined" || !ctx.createMediaStreamDestination) return null;
+    const dest = ctx.createMediaStreamDestination();
+    const a = new RTCPeerConnection();
+    const b = new RTCPeerConnection();
+    const el = new Audio();
+    const close = () => {
+        el.pause();
+        el.srcObject = null;
+        a.close();
+        b.close();
+        dest.disconnect();
+    };
+    try {
+        a.onicecandidate = (e) => { if (e.candidate) void b.addIceCandidate(e.candidate).catch(() => {}); };
+        b.onicecandidate = (e) => { if (e.candidate) void a.addIceCandidate(e.candidate).catch(() => {}); };
+        const remote = new Promise<MediaStream>((resolve) => {
+            b.ontrack = (e) => resolve(e.streams[0] ?? new MediaStream([e.track]));
+        });
+        for (const track of dest.stream.getAudioTracks()) a.addTrack(track, dest.stream);
+        const offer = await a.createOffer();
+        await a.setLocalDescription(offer);
+        await b.setRemoteDescription(offer);
+        const answer = await b.createAnswer();
+        await b.setLocalDescription(answer);
+        await a.setRemoteDescription(answer);
+        const connected = (async () => {
+            el.srcObject = await remote;
+            await el.play();
+        })();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+            connected,
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("loopback timeout")), timeoutMs); }),
+        ]).finally(() => clearTimeout(timer));
+        return { node: dest, close };
+    } catch (error) {
+        console.warn("[live-voice] call-audio loopback unavailable; playing directly", error);
+        close();
+        return null;
+    }
+}
+
 /** Kokoro pads each sentence with silence; retain 80 ms to avoid clipping breaths. */
 export function playbackBounds(buffer: AudioBuffer): { start: number; end: number } {
     let first = buffer.length;
@@ -200,6 +250,12 @@ export class PlaybackQueue {
         this.analyser = ctx.createAnalyser();
         this.analyser.fftSize = 256;
         this.analyser.connect(ctx.destination);
+    }
+
+    /** Send playback (not just cues) to another output, e.g. callAudioOutput(). */
+    routeTo(node: AudioNode) {
+        this.analyser.disconnect();
+        this.analyser.connect(node);
     }
 
     /** Clips are playing, paused or still queued. */

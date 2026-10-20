@@ -64,12 +64,12 @@ afterEach(() => {
 });
 const settle = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 
-for (const utterance of ["noise", "discard", "empty", "real", "mute", "failure", "drop"] as const) {
+for (const utterance of ["noise", "discard", "empty", "echo", "real", "mute", "failure", "drop"] as const) {
     test(`Live ${utterance} interruption preserves or replaces queued speech appropriately`, async () => {
         const sent: string[] = [];
         FakeSttWs.reply = (id) => utterance === "failure"
             ? { type: "error", id, message: "transcription unavailable" }
-            : { type: "final", id, text: utterance === "real" ? "Stop please" : "  " };
+            : { type: "final", id, text: utterance === "real" ? "Stop please" : utterance === "echo" ? "first sentence" : "  " };
         globalThis.fetch = (async (input: RequestInfo | URL) => {
             const url = String(input);
             if (url.endsWith("/api/tunnel-token")) return Response.json({ url: "/api/tunnel/auth/test/" });
