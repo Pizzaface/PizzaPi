@@ -33,6 +33,7 @@ export function replyText(messages: ReadonlyArray<{ role: string; content?: unkn
     return parts.join("\n\n");
 }
 
+const STOP_WORDS = new Set(["stop", "wait", "hold", "pause", "cancel", "no", "shut", "quiet", "enough", "hey"]);
 const words = (s: string) => s.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
 
 /**
@@ -44,6 +45,9 @@ const words = (s: string) => s.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
 export function isEcho(transcript: string, spoken: string): boolean {
     const heard = words(transcript);
     if (!heard.length) return false;
+    // Garbled echo fragments ("time and hit") rarely match; a short real
+    // interruption is almost always a stop word.
+    if (heard.length < 3) return !heard.some((w) => STOP_WORDS.has(w));
     const said = new Set(words(spoken));
     return heard.filter((w) => said.has(w)).length / heard.length >= 0.75;
 }
