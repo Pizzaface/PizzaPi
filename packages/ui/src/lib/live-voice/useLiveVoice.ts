@@ -62,7 +62,6 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const [agentCaption, setAgentCaption] = React.useState("");
     // Infinity until the first spoken turn: text already there when Live opened is shown in full.
     const [revealed, setRevealed] = React.useState(Infinity);
-    const turnRef = React.useRef(-1); // index of the user message the current reply answers
     const queuedEndRef = React.useRef(0); // reply offset where the last queued sentence ends
     const levelRef = React.useRef(0);
 
@@ -351,19 +350,21 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     // a tool call is complete, so flush it instead of waiting for more text.
     const toolRunning = (o.activeToolCalls?.size ?? 0) > 0;
     React.useEffect(() => {
+        // Empty or partial while the session (re)hydrates, e.g. reopening the app:
+        // without the user message the reply can't be located, so wait.
+        if (!o.messages.some((m) => m.role === "user")) return;
         const text = replyText(o.messages);
-        const turn = o.messages.findLastIndex((m) => m.role === "user");
         if (!chunkerRef.current) {
             // Opening Live mid-reply: don't read out what's already on screen.
             chunkerRef.current = new SpeechChunker();
             chunkerRef.current.flush(text);
             queuedEndRef.current = stripFences(text).length;
-            turnRef.current = turn;
             return;
         }
-        // A new turn restarts reply offsets; hide its text until it is spoken.
-        if (turn !== turnRef.current) {
-            turnRef.current = turn;
+        // Only a new user message starts a new reply. Index shifts and shrinking
+        // text from a reload/reconnect must never restart (and re-read) the reply.
+        if (o.messages.at(-1)!.role === "user") {
+            chunkerRef.current = new SpeechChunker();
             queuedEndRef.current = 0;
             setRevealed(0);
         }

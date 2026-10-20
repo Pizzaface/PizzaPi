@@ -41,11 +41,14 @@ describe("replyText", () => {
         const after = [...before.slice(0, 5), { role: "assistant", content: [{ type: "text", text: "All green." }] }];
         expect(c.flush(replyText(after))).toEqual(["All green."]);
     });
-    test("shrinking text never re-reads", () => {
+    test("text that shrinks and comes back (rehydrate) is never re-read", () => {
         const c = new SpeechChunker();
         c.push("One. Two. ");
-        expect(c.push("One. ")).toEqual([]);
-        expect(c.push("One. Three. ")).toEqual(["Three."]);
+        expect(c.push("")).toEqual([]);
+        expect(c.flush("One. ")).toEqual([]);
+        expect(c.push("One. Two. ")).toEqual([]);
+        expect(c.flush("One. Two. ")).toEqual([]);
+        expect(c.push("One. Two. Three. ")).toEqual(["Three."]);
     });
 });
 
