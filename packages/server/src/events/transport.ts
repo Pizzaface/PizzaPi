@@ -123,8 +123,9 @@ async function emitToSessionAcked(
       (local as any).timeout(SESSION_TRIGGER_ACK_TIMEOUT_MS).emit(
         "session_trigger",
         { trigger },
-        (err: unknown, ackResponses: unknown[] = []) => {
-          settle(!err && ackResponses.length > 0);
+        (err: unknown, response?: { ok?: unknown }) => {
+          // A direct Socket ack is one payload; only room broadcasts return arrays.
+          settle(!err && response?.ok === true);
         },
       );
       return true;

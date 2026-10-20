@@ -111,17 +111,8 @@ mock.module("./GitBranchSelector", () => ({
     ),
 }));
 
-mock.module("./GitStagingArea", () => ({
-    partitionChanges: () => ({ staged: [], unstaged: [] }),
-    GitStagingArea: () => <div data-testid="staging-area" />,
-}));
-
 mock.module("./GitDiffView", () => ({
     GitDiffView: () => <div data-testid="diff-view" />,
-}));
-
-mock.module("./GitStashList", () => ({
-    GitStashList: () => <div data-testid="stash-list" />,
 }));
 
 afterAll(() => mock.restore());

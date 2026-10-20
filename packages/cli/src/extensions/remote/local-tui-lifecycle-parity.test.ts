@@ -430,6 +430,53 @@ describe("local-TUI transition cleanup parity", () => {
     });
 });
 
+describe("auto-close belongs to the original conversation", () => {
+    const originalAutoClose = process.env.PIZZAPI_WORKER_AUTO_CLOSE;
+    const originalWorkerCwd = process.env.PIZZAPI_WORKER_CWD;
+    const originalSend = process.send;
+    afterEach(() => {
+        process.send = originalSend;
+        if (originalAutoClose === undefined) delete process.env.PIZZAPI_WORKER_AUTO_CLOSE;
+        else process.env.PIZZAPI_WORKER_AUTO_CLOSE = originalAutoClose;
+        if (originalWorkerCwd === undefined) delete process.env.PIZZAPI_WORKER_CWD;
+        else process.env.PIZZAPI_WORKER_CWD = originalWorkerCwd;
+    });
+
+    for (const worker of [false, true]) {
+        for (const reason of worker ? ["new", "startup", "reload", "wake"] : ["new", "startup", "reload"]) {
+            test(`${worker ? "worker" : "local TUI"} ${reason}: only /new disables auto-close for the next answer`, async () => {
+                process.env.PIZZAPI_WORKER_AUTO_CLOSE = "true";
+                const send = mock(() => true);
+                process.send = send;
+                if (worker) process.env.PIZZAPI_WORKER_CWD = "/tmp/worker-cwd";
+                else delete process.env.PIZZAPI_WORKER_CWD;
+                const { handlers } = makeMinimalDeps({
+                    relaySessionId: "session-auto-close",
+                    relay: { sessionId: "session-auto-close", token: "test-token" } as RelayContext["relay"],
+                    sioSocket: {
+                        connected: true,
+                        emit: (event: string, _data: unknown, ack?: (response: unknown) => void) => {
+                            if (event === "get_linked_child_count") ack?.({ ok: true, count: 0 });
+                        },
+                    } as unknown as RelayContext["sioSocket"],
+                });
+                const shutdown = mock(() => {});
+                const ctx = { ...minimalCtx, shutdown };
+                handlers.get(worker ? "session_switch" : "session_start")!({ reason }, ctx);
+                handlers.get("agent_end")!({ messages: [] }, ctx);
+                handlers.get("agent_settled")!({}, ctx);
+                await new Promise((resolve) => setTimeout(resolve, 0));
+
+                if (reason === "new") expect(process.env.PIZZAPI_WORKER_AUTO_CLOSE).toBeUndefined();
+                else expect(process.env.PIZZAPI_WORKER_AUTO_CLOSE).toBe("true");
+                expect(shutdown).toHaveBeenCalledTimes(reason === "new" ? 0 : 1);
+                if (reason === "new") expect(send).toHaveBeenCalledWith({ type: "disable_auto_close" });
+                else expect(send).not.toHaveBeenCalled();
+            });
+        }
+    }
+});
+
 // ── clearTriggerHistory cutoff must be relay-clock-corrected (GM a8yAXXwa round 2) ──
 //
 // `clearTriggerHistory`'s `before` cutoff is compared against relay-local

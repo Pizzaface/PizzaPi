@@ -24,6 +24,8 @@ PizzaPi sessions are powered by pi's session engine — a tree-structured conver
 | `/name <name>` | Give the current session a display name |
 | `/session` | Show session info (path, tokens, cost) |
 
+`/new` also clears automatic closing inherited from a trigger-spawned session. The fresh conversation stays open after an answer, including after a worker `/restart`. Startup, reload, and suspend-wake keep the existing auto-close setting.
+
 Sessions auto-save as JSONL files under `~/.pizzapi/sessions/`, organized by working directory.
 
 ### Session Storage

@@ -230,6 +230,17 @@ describe("session-spawner child", () => {
             // Restart-in-place is NOT a session end — service cleanup must not run.
             expect(onSessionExitRestart).not.toHaveBeenCalled();
 
+            for (const disableAutoClose of [false, true]) {
+                const restartWithAutoClose = mock((_autoClose?: boolean) => {});
+                spawnSession("sess-auto-close", "api-key", "https://relay.example", tempCwd,
+                    new Map(), new Set(), new Set(), restartWithAutoClose, { autoClose: true });
+                if (disableAutoClose) latestChild!.emit("message", { type: "disable_auto_close" });
+                latestChild!.emit("message", { type: "pre_restart" });
+                latestChild!.exitCode = 43;
+                latestChild!.emit("exit", 43, null);
+                expect(restartWithAutoClose).toHaveBeenCalledWith(!disableAutoClose);
+            }
+
             const normalRunningSessions = new Map();
             const normalRestartingSessions = new Set<string>();
             const normalKilledSessions = new Set<string>();

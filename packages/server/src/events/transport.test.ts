@@ -25,9 +25,9 @@ let wakeRedis: Record<string, unknown> | null = null;
 
 type LocalSocket = {
   connected: boolean;
-  emits: Array<{ event: string; data: any; ack?: (err: unknown, responses?: unknown[]) => void }>;
-  emit: (event: string, data: any, ack?: (err: unknown, responses?: unknown[]) => void) => void;
-  timeout: (ms: number) => { emit: (event: string, data: any, ack?: (err: unknown, responses?: unknown[]) => void) => void };
+  emits: Array<{ event: string; data: any; ack?: (err: unknown, response?: { ok: boolean }) => void }>;
+  emit: (event: string, data: any, ack?: (err: unknown, response?: { ok: boolean }) => void) => void;
+  timeout: (ms: number) => { emit: (event: string, data: any, ack?: (err: unknown, response?: { ok: boolean }) => void) => void };
 };
 
 function makeLocalSocket(): LocalSocket {
@@ -269,7 +269,7 @@ describe("trigger transport delivery receipt", () => {
     // callbacks from the packet handler — outside the emit's auth context.
     strictAuth = true;
     try {
-      authStorage.exit(() => localSocket!.emits[0].ack!(null, [{ ok: true }]));
+      authStorage.exit(() => localSocket!.emits[0].ack!(null, { ok: true }));
       await new Promise((r) => setTimeout(r, 0));
     } finally {
       strictAuth = false;
@@ -277,7 +277,22 @@ describe("trigger transport delivery receipt", () => {
     const settled = await store.getDelivery(deliveryId);
     expect(settled?.status).toBe("delivered");
     expect(settled?.deliveredAt).toBeDefined();
+
+    // Re-registering must not replay a successfully received event.
+    await authStorage.run(authCtx, () => engine.drainPendingDeliveries("s-new", transport.createEngineDeps(), "u1"));
+    expect(localSocket.emits).toHaveLength(1);
   });
+
+  for (const response of [undefined, { ok: false }]) {
+    it(`ack-capable CLI: ${JSON.stringify(response)} is not a positive receipt`, async () => {
+      localSocket = makeLocalSocket();
+      sharedSession = { sessionId: "s-rejected", acksSessionTrigger: true };
+      const { deliveryId } = await publishTo("s-rejected");
+      localSocket.emits[0].ack!(null, response);
+      await new Promise((r) => setTimeout(r, 0));
+      expect((await store.getDelivery(deliveryId))?.status).toBe("pending");
+    });
+  }
 
   it("ack-capable CLI: ack timeout reverts the row to pending for re-delivery", async () => {
     localSocket = makeLocalSocket();
@@ -286,7 +301,7 @@ describe("trigger transport delivery receipt", () => {
     const { deliveryId } = await publishTo("s-flap");
     expect((await store.getDelivery(deliveryId))?.status).toBe("inflight");
 
-    // Socket.IO timeout callback: (err, []) — no ack will ever come.
+    // Socket.IO timeout callback: (err) — no ack will ever come.
     localSocket.emits[0].ack!(new Error("operation has timed out"));
     await new Promise((r) => setTimeout(r, 0));
     expect((await store.getDelivery(deliveryId))?.status).toBe("pending");
