@@ -278,7 +278,7 @@ export function spawnSession(
     runningSessions: Map<string, RunnerSession>,
     restartingSessions: Set<string>,
     killedSessions: Set<string>,
-    onRestartRequested?: () => void,
+    onRestartRequested?: (autoClose: boolean) => void,
     options?: {
         prompt?: string;
         imageUrls?: string[];
@@ -517,6 +517,7 @@ export function spawnSession(
     // Set by the worker's "pre_suspend" IPC: it is exiting idle while the relay
     // keeps the session, and a wake respawns it under the same ID.
     let suspended = false;
+    let autoClose = options?.autoClose === true;
     child.on("message", (msg: unknown) => {
         if (typeof msg !== "object" || msg === null) return;
         const message = msg as Record<string, unknown>;
@@ -529,6 +530,10 @@ export function spawnSession(
             const running = runningSessions.get(sessionId);
             if (running) running.suspending = true;
             logInfo(`session ${sessionId} suspending via IPC`);
+            return;
+        }
+        if (message.type === "disable_auto_close") {
+            autoClose = false;
             return;
         }
         if (message.type === "pre_restart") {
@@ -600,7 +605,7 @@ export function spawnSession(
                 logInfo(`session ${sessionId} retained prior worker process group ${child.pid} for cleanup`);
             }
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
-            onRestartRequested();
+            onRestartRequested(autoClose);
         } else {
             // An intentional kill_session teardown (including one that
             // escalates SIGTERM to SIGKILL after the grace window, or one that

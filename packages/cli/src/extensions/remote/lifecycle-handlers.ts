@@ -354,6 +354,11 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     // ── Session lifecycle ─────────────────────────────────────────────────────
 
     pi.on("session_start", (event: any, ctx: any) => {
+        // /new takes over the worker for an interactive conversation.
+        if (event?.reason === "new") {
+            delete process.env.PIZZAPI_WORKER_AUTO_CLOSE;
+            process.send?.({ type: "disable_auto_close" });
+        }
         // Local-TUI: /new, /resume, /fork fire session_start (not session_switch).
         // Only run transition cleanup for real transitions — skip "startup" (first
         // load) and "reload" (/restart, /skills reload, plugin-change reloads).
@@ -383,6 +388,10 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     });
 
     pi.on("session_switch", (event: any, ctx: any) => {
+        if (event.reason === "new") {
+            delete process.env.PIZZAPI_WORKER_AUTO_CLOSE;
+            process.send?.({ type: "disable_auto_close" });
+        }
         rctx.latestCtx = ctx;
         rctx.sessionStartedAt = Date.now();
         rctx.isAgentActive = false;

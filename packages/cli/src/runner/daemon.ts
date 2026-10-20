@@ -1850,7 +1850,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     failure,
                 });
             };
-            const doSpawn = () => {
+            // /new can disable auto-close; restarts pass the worker's current setting.
+            const doSpawn = (autoClose = requestedAutoClose === true) => {
                 try {
                     // Report session_ready only once the worker confirms its
                     // full startup chain succeeded; a worker that refuses
@@ -1878,8 +1879,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // this session's first spawn under this handler's closure —
                     // never set on a restart-in-place respawn.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true, isWake: requestedWake === true, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }
-                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }; // Always pass agent + hidden models + parent + autoClose on restart
+                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose, isWake: requestedWake === true, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }
+                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
                     setSessionCloseMetadata(sessionId, {
