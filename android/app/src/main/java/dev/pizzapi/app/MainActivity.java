@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
         // Register the local ntfy foreground-service push plugin before the
         // bridge initializes. registerPlugin must be called before super.onCreate.
         registerPlugin(NtfyPushPlugin.class);
+        registerPlugin(LiveAudioPlugin.class);
         super.onCreate(savedInstanceState);
         // WebView drops target="_blank"/window.open() by default (no
         // onCreateWindow handler, multi-window unsupported) — route them to

@@ -1,7 +1,8 @@
 import * as React from "react";
 import { resolveTunnelTarget } from "@/hooks/useTunnelSrc";
-import { PlaybackQueue, startMic } from "./audio";
-import { replyText, SpeechChunker, stripFences } from "./speech";
+import { callAudioOutput, PlaybackQueue, startMic } from "./audio";
+import { enterCallMode, needsCallAudio } from "./call-audio";
+import { isEcho, replyText, SpeechChunker, stripFences } from "./speech";
 import { fetchTunnelWithFallback } from "./tunnel-fetch";
 import { disconnected, SttSocket, sttSocketUrl } from "./stt-socket";
 
@@ -41,6 +42,8 @@ export interface LiveVoiceState {
 }
 
 const HEARTBEAT_MS = 30_000;
+/** Room reverb can still reach the mic just after playback stops. */
+const ECHO_TAIL_MS = 1500;
 
 export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const [base, setBase] = React.useState<URL | null>(null);
@@ -75,6 +78,8 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
     const sttFailedRef = React.useRef<(() => void) | null>(null);
     // The last committed caption, restored when a candidate utterance is dropped.
     const committedCaption = React.useRef("");
+    // Sentences recently played aloud, to recognise the agent hearing itself.
+    const spokenRef = React.useRef<string[]>([]);
 
     // Permission is requested by the Live button's click handler. Observe the
     // result now, and stop the stream if the overlay closes before models load.
@@ -98,6 +103,9 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
             micStreamRef.current = null;
         };
     }, [o.micStream]);
+
+    // Android app: voice-call audio mode for the whole time Live is open.
+    React.useEffect(() => enterCallMode(), []);
 
     // 1. Resolve the tunnel to the live service.
     React.useEffect(() => {
@@ -168,6 +176,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                 if (!r.ok) throw new Error(`tts ${r.status}`);
                 return r.arrayBuffer();
             }, () => {
+                spokenRef.current = [...spokenRef.current.slice(-2), sentence];
                 setAgentCaption(sentence);
                 setRevealed(end); // show the sentence in the feed as it starts playing
             });
@@ -205,6 +214,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         const queue = new PlaybackQueue(
             ctx,
             () => {
+                silentSince = performance.now();
                 setPlaying(false);
                 // Queue drained (not just paused): everything queued has been spoken or skipped.
                 if (!queue.busy) setRevealed(queuedEndRef.current);
@@ -213,6 +223,18 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
         );
         queueRef.current = queue;
         let stopped = false;
+        let closeOutput: (() => void) | null = null;
+        if (needsCallAudio()) {
+            void callAudioOutput(ctx).then((out) => {
+                if (!out) return;
+                if (stopped) return out.close();
+                queue.routeTo(out.node);
+                closeOutput = out.close;
+            });
+        }
+        // Playback was audible when (or just before) the current utterance started.
+        let silentSince = performance.now();
+        let mayBeEcho = false;
         const ac = new AbortController();
         const restoreCaption = () => {
             setUserCaption(committedCaption.current);
@@ -239,6 +261,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
             },
             onSpeechStart: () => {
                 setHearing(true);
+                mayBeEcho = queue.playing || performance.now() - silentSince < ECHO_TAIL_MS;
                 // Noise is only a candidate interruption. Preserve audio until
                 // transcription confirms that the user actually said something.
                 queue.pause();
@@ -259,7 +282,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                     if (!stt) throw disconnected("Speech service is not connected.");
                     const text = await stt.finish();
                     if (stopped) return;
-                    if (!text.trim()) {
+                    if (!text.trim() || (mayBeEcho && isEcho(text, spokenRef.current.join(" ")))) {
                         restoreCaption();
                         queue.resume();
                         return;
@@ -314,6 +337,7 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
             ac.abort();
             cancelAnimationFrame(raf);
             queue.clear();
+            closeOutput?.();
             micRef.current?.stop();
             micRef.current = null;
             queueRef.current = null;
