@@ -42,6 +42,8 @@ export interface AskUserQuestionParams {
     questions?: AskUserQuestionItem[];
     /** Optional multi-question UI layout preference. */
     display?: AskUserQuestionDisplay;
+    /** Child sessions: "human" sends the question straight to the user instead of the parent agent. */
+    audience?: "parent" | "human";
     /** Legacy single-question fields (older callers) */
     question?: string;
     placeholder?: string;

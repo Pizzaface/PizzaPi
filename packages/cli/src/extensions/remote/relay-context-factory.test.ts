@@ -130,6 +130,25 @@ describe("createRelayContext child trigger delivery", () => {
         });
     });
 
+    test("session_complete publishes a non-escalating contract (never hops to the grandparent)", async () => {
+        const rctx = createRelayContext({}, createTriggerWaitManager(), { lastBroadcastSessionName: null });
+        rctx.relay = { sessionId: "child-1", token: "relay-token", shareUrl: "", seq: 0, ackedSeq: 0 };
+        await rctx.emitTriggerWithAck({
+            type: "lifecycle:session_complete",
+            sourceSessionId: "child-1",
+            targetSessionId: "parent-1",
+            payload: { summary: "done" },
+            deliverAs: "steer",
+            expectsResponse: true,
+            triggerId: "trigger-sc",
+            ts: new Date().toISOString(),
+        });
+        expect(publishEventMock.mock.calls.at(-1)![0]).toMatchObject({
+            type: "lifecycle:session_complete",
+            responseContract: { escalate: false },
+        });
+    });
+
     test("emitTriggerWithAck surfaces publish failures", async () => {
         const rctx = createRelayContext({}, createTriggerWaitManager(), { lastBroadcastSessionName: null });
         rctx.relay = { sessionId: "child-1", token: "relay-token", shareUrl: "", seq: 0, ackedSeq: 0 };

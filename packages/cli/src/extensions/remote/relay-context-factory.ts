@@ -59,7 +59,10 @@ async function publishLifecycleEvent(
         ...(trigger.sourceSessionName ? { summary: trigger.sourceSessionName } : {}),
         fireId: trigger.triggerId,
         ...(trigger.expectsResponse
-            ? { responseContract: { escalate: true, ttlMs: LIFECYCLE_TTL_MS } }
+            // Completion acks never escalate: an unacked session_complete is
+            // not a blocked child, and hopping it to the grandparent only
+            // made the root chase work its direct parent already handled.
+            ? { responseContract: { escalate: trigger.type !== "lifecycle:session_complete", ttlMs: LIFECYCLE_TTL_MS } }
             : {}),
         target: { sessionId: trigger.targetSessionId, deliverAs: trigger.deliverAs },
         source: {

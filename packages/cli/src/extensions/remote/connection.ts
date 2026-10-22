@@ -21,9 +21,10 @@ import { cancelPendingPlanMode, consumePendingPlanModeFromWeb } from "../remote-
 import { cancelPendingApproval, consumePendingApprovalFromWeb } from "../remote-approval.js";
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../remote-input.js";
 import { handleExecFromWeb } from "../remote-exec-handler.js";
-import { renderTrigger, renderTriggerBatch } from "../triggers/registry.js";
+import { isHumanAudienceQuestion, renderTrigger, renderTriggerBatch } from "../triggers/registry.js";
 import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck, markTriggerHandled, markTriggerDelivered, markTriggerInjectionFailed, partitionTriggerBatchByDeliveryMode, finalizeSessionCompleteResponse, isSessionCompleteType } from "../triggers/extension.js";
 import type { ConversationTrigger } from "../triggers/types.js";
+import { escalateDelivery } from "../trigger-client.js";
 import type { RelayContext } from "../remote-types.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { resetRelayRegistrationGate, signalRelayRegistered } from "./registration-gate.js";
@@ -728,14 +729,33 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             log.info(`dropping duplicate session_trigger (${trigger.type}) ${trigger.triggerId}`);
             return;
         }
-        const rendered = renderTrigger(trigger);
+        const enqueue = (t: ConversationTrigger, deliverAs: "steer" | "followUp") => {
+            // Enqueue and debounce: triggers that arrive within the batch window are
+            // flushed together as a single agent message (see flushTriggerBatch above).
+            pendingTriggerBatch.push({ trigger: t, rendered: renderTrigger(t), deliverAs });
+            if (triggerBatchTimer !== null) clearTimeout(triggerBatchTimer);
+            triggerBatchTimer = setTimeout(flushTriggerBatch, TRIGGER_BATCH_DEBOUNCE_MS);
+        };
         const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
 
-        // Enqueue and debounce: triggers that arrive within the batch window are
-        // flushed together as a single agent message (see flushTriggerBatch above).
-        pendingTriggerBatch.push({ trigger, rendered, deliverAs });
-        if (triggerBatchTimer !== null) clearTimeout(triggerBatchTimer);
-        triggerBatchTimer = setTimeout(flushTriggerBatch, TRIGGER_BATCH_DEBOUNCE_MS);
+        // A question the child addressed to the human climbs the chain without
+        // any agent in between: forward it up now (each hop's CLI does the
+        // same), and tell this agent as a non-interrupting FYI. If forwarding
+        // fails, fall back to the normal answerable question.
+        if (isHumanAudienceQuestion(trigger)) {
+            void escalateDelivery(trigger.triggerId).then((r) => {
+                if (r.ok) {
+                    markTriggerHandled(trigger.triggerId);
+                    enqueue({ ...trigger, expectsResponse: false }, "followUp");
+                } else {
+                    log.info(`auto-forward of human question ${trigger.triggerId} failed: ${r.error ?? "unknown"}`);
+                    const { audience: _a, ...payload } = trigger.payload as Record<string, unknown>;
+                    enqueue({ ...trigger, payload }, deliverAs);
+                }
+            });
+            return;
+        }
+        enqueue(trigger, deliverAs);
     });
 
     sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string; targetSessionId?: string }) => {

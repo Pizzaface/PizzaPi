@@ -386,6 +386,11 @@ export function registerAskUserTool(rctx: RelayContext) {
                         required: ["question", "options"],
                     },
                 },
+                audience: {
+                    type: "string",
+                    enum: ["parent", "human"],
+                    description: "Child sessions only. Default \"parent\": your parent agent answers. Use \"human\" when only the user can answer (their preferences, decisions reserved for them, secrets, physical actions) — it goes straight to the user, skipping every agent in between.",
+                },
                 display: {
                     type: "string",
                     enum: ["stepper"],
@@ -452,6 +457,7 @@ export function registerAskUserTool(rctx: RelayContext) {
                         question: questions.map(q => q.question).join("; "),
                         options: questions.flatMap(q => q.options),
                         questions,
+                        ...(params.audience === "human" ? { audience: "human" } : {}),
                     },
                     // steer: the child is blocked waiting on this answer (indefinitely,
                     // see waitForTriggerResponse) — the parent must be interrupted to see

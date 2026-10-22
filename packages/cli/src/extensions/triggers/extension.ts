@@ -697,7 +697,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Trigger ${params.triggerId} escalated to ${to}. They answer the child directly — do not respond to it yourself.`,
+                    text: `Trigger ${params.triggerId} escalated to ${to}. They answer the child directly — do not respond to it, relay their answer, or ask the user the same question yourself.`,
                 }],
                 details: null as any,
             };
