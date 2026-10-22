@@ -288,6 +288,24 @@ describe("streaming STT host", () => {
         expect(stt.status().state).toBe("error");
     });
 
+    test("a load with no progress for the stall window fails and can be retried", async () => {
+        const workers: FakeWorker[] = [];
+        const stt = new StreamingStt("/models", () => { const w = new FakeWorker(); workers.push(w); return w as never; }, 60_000, 30);
+        disposers.push(() => stt.dispose());
+        const first = stt.warm();
+        await new Promise((r) => setTimeout(r, 15));
+        workers[0]!.emit({ type: "progress", file: "a", pct: 10 }); // progress resets the watchdog
+        await new Promise((r) => setTimeout(r, 20));
+        expect(stt.status().state).toBe("loading");
+        await expect(first).rejects.toThrow("stalled");
+        expect(stt.status().state).toBe("error");
+        expect(workers[0]!.terminated).toBe(true);
+        const second = stt.warm();
+        workers[1]!.emit({ type: "ready" });
+        await second;
+        expect(stt.status().state).toBe("ready");
+    });
+
     test("unloads the model after idling with no clients, never while one is connected", async () => {
         const { stt, worker } = await readyStt(10);
         const release = stt.retain();
@@ -297,6 +315,60 @@ describe("streaming STT host", () => {
         await Bun.sleep(30);
         expect(worker.terminated).toBe(true);
         expect(stt.status().state).toBe("idle");
+    });
+});
+
+describe("tts lifecycle", () => {
+    function fakeKokoro() {
+        const state = { loads: 0, disposed: 0, generated: 0 };
+        const load = async () => {
+            state.loads++;
+            return {
+                generate: async () => { state.generated++; return { toWav: () => new ArrayBuffer(4) }; },
+                model: { dispose: async () => { state.disposed++; } },
+            };
+        };
+        return { state, load };
+    }
+
+    test("unloads Kokoro after idling with no clients, never while one is connected", async () => {
+        const { state, load } = fakeKokoro();
+        const engine = new SpeechEngine(new StreamingStt("/m", () => new FakeWorker() as never, 60_000), 20, load);
+        const release = engine.retain();
+        await engine.synthesize("hi");
+        expect(engine.status().tts).toBe("ready");
+        await new Promise((r) => setTimeout(r, 40));
+        expect(state.disposed).toBe(0); // a client is connected
+        release();
+        await new Promise((r) => setTimeout(r, 40));
+        expect(state.disposed).toBe(1);
+        expect(engine.status().tts).toBe("idle");
+        // The next request reloads, and in-flight work is never disposed under it.
+        await engine.synthesize("again");
+        expect(state.loads).toBe(2);
+        expect(state.generated).toBe(2);
+        engine.dispose();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(state.disposed).toBe(2);
+    });
+    test("a stalled Kokoro load fails (retryable) and the late model is disposed, not kept", async () => {
+        const { state, load } = fakeKokoro();
+        let release!: () => void;
+        let calls = 0;
+        // First load hangs until release(); the retry resolves normally.
+        const slow = () => (calls++ ? load() : new Promise<Awaited<ReturnType<typeof load>>>((resolve) => { release = () => resolve(load()); }));
+        const engine = new SpeechEngine(new StreamingStt("/m", () => new FakeWorker() as never, 60_000), 60_000, slow, 20);
+        engine.warm();
+        await new Promise((r) => setTimeout(r, 40));
+        expect(engine.status().tts).toBe("error");
+        expect(engine.status().error).toContain("stalled");
+        release();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(state.disposed).toBe(1);
+        const wav = await engine.synthesize("retry"); // loads again
+        expect(wav.byteLength).toBe(4);
+        expect(state.loads).toBe(2);
+        engine.dispose();
     });
 });
 

@@ -18,7 +18,9 @@ export const MAX_BACKLOG_SAMPLES = 16000 * 8;
 /** Hard cap per utterance; the browser VAD already ends segments at 30 s. */
 export const MAX_STREAM_SAMPLES = 16000 * 45;
 export const MAX_STREAMS = 4;
-const IDLE_UNLOAD_MS = 10 * 60_000;
+export const IDLE_UNLOAD_MS = 10 * 60_000;
+/** A load with no progress for this long is failed, so a stalled download can't pin "loading" forever. */
+export const LOAD_STALL_MS = 2 * 60_000;
 
 export type HostToWorker =
     | { type: "load"; root: string }
@@ -106,6 +108,7 @@ export class StreamingStt {
         private root = MOONSHINE_DIR,
         private spawn: () => WorkerLike = spawnWorkerProcess,
         private idleMs = IDLE_UNLOAD_MS,
+        private stallMs = LOAD_STALL_MS,
     ) {}
 
     status(): { state: ModelState; progress: Record<string, number>; error?: string } {
@@ -121,10 +124,24 @@ export class StreamingStt {
         this.#worker = worker;
         this.#ready = new Promise<void>((resolve, reject) => {
             this.#rejectLoad = reject;
+            let stall: ReturnType<typeof setTimeout> | undefined;
+            const touch = () => {
+                clearTimeout(stall);
+                stall = setTimeout(() => {
+                    if (this.#worker !== worker) return;
+                    const message = "speech model load stalled";
+                    this.#fail(message);
+                    reject(new Error(message));
+                }, this.stallMs);
+                (stall as { unref?: () => void }).unref?.();
+            };
+            touch();
             worker.onmessage = (e) => {
                 if (this.#worker !== worker) return; // superseded or unloaded
                 const m = e.data;
+                if (m.type === "progress" || m.type === "ready") touch();
                 if (m.type === "ready") {
+                    clearTimeout(stall);
                     this.#state = "ready";
                     this.#progress = {};
                     this.#rejectLoad = null;

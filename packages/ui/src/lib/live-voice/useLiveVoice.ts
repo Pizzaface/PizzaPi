@@ -264,8 +264,9 @@ export function useLiveVoice(o: LiveVoiceOptions): LiveVoiceState {
                 // Noise is only a candidate interruption. Preserve audio until
                 // transcription confirms that the user actually said something.
                 // While the agent is audible the "speech" is often its own echo:
-                // keep talking and decide on the final transcript instead.
-                if (!mayBeEcho) queue.pause();
+                // drop to a low volume and let the final transcript decide.
+                if (mayBeEcho) queue.duck(true);
+                else queue.pause();
                 sttRef.current?.begin();
             },
             onAudio: (samples) => sttRef.current?.audio(samples),

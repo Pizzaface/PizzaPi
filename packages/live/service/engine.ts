@@ -5,7 +5,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { StreamingStt } from "./stt.ts";
+import { IDLE_UNLOAD_MS, LOAD_STALL_MS, StreamingStt } from "./stt.ts";
 
 export const TTS_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
 export const DEFAULT_VOICE = "af_heart";
@@ -42,7 +42,19 @@ type Kokoro = {
     generate(text: string, opts: { voice: string; speed?: number }): Promise<{ toWav(): ArrayBuffer }>;
     list_voices?: () => unknown;
     voices?: Record<string, unknown>;
+    /** transformers.js PreTrainedModel; dispose() releases its ONNX sessions. */
+    model?: { dispose?(): Promise<unknown> };
 };
+
+/** Kokoro via transformers.js (ONNX, native runtime in Bun). Models cache under MODELS_DIR. */
+export async function loadKokoro(onProgress: (p: { status?: string; file?: string; progress?: number }) => void): Promise<Kokoro> {
+    const { env } = await import("@huggingface/transformers");
+    env.cacheDir = MODELS_DIR;
+    const { KokoroTTS } = await import("kokoro-js");
+    // fp32 measured fastest on Apple CPUs (~0.4x real time) vs q8 (~0.75x).
+    const tts = await KokoroTTS.from_pretrained(TTS_MODEL, { dtype: "fp32", device: "cpu", progress_callback: onProgress });
+    return tts as unknown as Kokoro;
+}
 
 export class SpeechEngine {
     #tts: Promise<Kokoro> | null = null;
@@ -51,8 +63,30 @@ export class SpeechEngine {
     #progress: Record<string, number> = {};
     // ponytail: one global queue; the ONNX session runs one call at a time anyway.
     #ttsQueue: Promise<unknown> = Promise.resolve();
+    #refs = 0;
+    #ttsIdle: ReturnType<typeof setTimeout> | undefined;
 
-    constructor(readonly stt = new StreamingStt()) {}
+    constructor(
+        readonly stt = new StreamingStt(),
+        private idleMs = IDLE_UNLOAD_MS,
+        private load: typeof loadKokoro = loadKokoro,
+        private stallMs = LOAD_STALL_MS,
+    ) {}
+
+    /** Keep both models loaded while a client is connected; unload them after idling. */
+    retain(): () => void {
+        this.#refs++;
+        clearTimeout(this.#ttsIdle);
+        const releaseStt = this.stt.retain();
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            this.#refs--;
+            releaseStt();
+            this.#scheduleTtsIdle();
+        };
+    }
 
     status(): EngineStatus {
         const stt = this.stt.status();
@@ -73,9 +107,10 @@ export class SpeechEngine {
     }
 
     async synthesize(text: string, voice = DEFAULT_VOICE, speed = 1): Promise<ArrayBuffer> {
+        clearTimeout(this.#ttsIdle);
         const tts = await this.#loadTts();
         const next = this.#ttsQueue.then(async () => (await tts.generate(text, { voice, speed })).toWav());
-        this.#ttsQueue = next.catch(() => {});
+        this.#ttsQueue = next.catch(() => {}).finally(() => this.#scheduleTtsIdle());
         return next;
     }
 
@@ -85,7 +120,29 @@ export class SpeechEngine {
     }
 
     dispose(): void {
+        clearTimeout(this.#ttsIdle);
+        this.#unloadTts();
         this.stt.dispose();
+    }
+
+    #scheduleTtsIdle() {
+        clearTimeout(this.#ttsIdle);
+        if (this.#refs > 0 || !this.#tts || this.#ttsState !== "ready") return;
+        // ponytail: Kokoro (native ORT, fp32) stays resident in the daemon otherwise; reload costs a few seconds.
+        this.#ttsIdle = setTimeout(() => this.#unloadTts(), this.idleMs);
+        (this.#ttsIdle as { unref?: () => void }).unref?.();
+    }
+
+    /** Release the ONNX sessions once in-flight synthesis has drained. The next request reloads. */
+    #unloadTts() {
+        const p = this.#tts;
+        if (!p) return;
+        this.#tts = null;
+        this.#ttsState = "idle";
+        this.#ttsQueue = this.#ttsQueue.then(async () => {
+            const tts = await p.catch(() => null);
+            await tts?.model?.dispose?.().catch(() => {});
+        });
     }
 
     #onProgress = (p: { status?: string; file?: string; progress?: number }) => {
@@ -98,24 +155,35 @@ export class SpeechEngine {
         if (!this.#tts) {
             this.#ttsState = "loading";
             this.#ttsError = undefined;
-            const p = (async () => {
-                const { env } = await import("@huggingface/transformers");
-                env.cacheDir = MODELS_DIR;
-                const { KokoroTTS } = await import("kokoro-js");
-                // fp32 measured fastest on Apple CPUs (~0.4x real time) vs q8 (~0.75x).
-                const tts = await KokoroTTS.from_pretrained(TTS_MODEL, {
-                    dtype: "fp32",
-                    device: "cpu",
-                    progress_callback: this.#onProgress,
-                });
-                return tts as unknown as Kokoro;
-            })();
+            // A download with no progress for stallMs fails the load (retryable) instead of pinning "loading".
+            let stall: ReturnType<typeof setTimeout> | undefined;
+            const touch = () => {
+                clearTimeout(stall);
+                stall = setTimeout(() => {
+                    if (this.#tts !== p) return;
+                    this.#tts = null;
+                    this.#ttsState = "error";
+                    this.#ttsError = "voice model load stalled";
+                }, this.stallMs);
+                (stall as { unref?: () => void }).unref?.();
+            };
+            touch();
+            const p: Promise<Kokoro> = this.load((e) => {
+                touch();
+                this.#onProgress(e);
+            });
             this.#tts = p;
             p.then(
-                () => {
+                (tts) => {
+                    clearTimeout(stall);
+                    // Unloaded or timed out while loading: don't keep a model nobody tracks.
+                    if (this.#tts !== p) return void tts.model?.dispose?.().catch(() => {});
                     this.#ttsState = "ready";
+                    this.#scheduleTtsIdle();
                 },
                 (err: unknown) => {
+                    clearTimeout(stall);
+                    if (this.#tts !== p) return;
                     this.#ttsState = "error";
                     this.#ttsError = err instanceof Error ? err.message : String(err);
                     // Allow a retry on the next request instead of caching the failure forever.

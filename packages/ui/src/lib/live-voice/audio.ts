@@ -65,6 +65,11 @@ export async function startMic(
     let generation = 0;
     let processingGeneration = 0;
     const acceptsDetection = () => !stopped && !muted && !transcribing && generation === processingGeneration;
+    // Frames that arrived while the detector was busy. They are the utterance
+    // audio as well as VAD input, so they queue instead of being dropped.
+    // ponytail: ~1 s cap, oldest dropped beyond it; a device that slow is losing speech anyway.
+    const pending: Float32Array[] = [];
+    const MAX_PENDING = Math.ceil(ctx.sampleRate / FRAME);
     const detector = await createSpeechDetector(ctx.sampleRate, {
         start: () => {
             if (!acceptsDetection()) return;
@@ -84,6 +89,7 @@ export async function startMic(
             if (!acceptsDetection() || !hearing) return;
             hearing = false;
             transcribing = true;
+            pending.length = 0;
             void Promise.resolve().then(() => {
                 if (!stopped) return h.onSpeechEnd();
             }).catch((error: unknown) => { if (!stopped) h.onError(error); }).finally(() => {
@@ -121,11 +127,7 @@ export async function startMic(
         await detector.destroy();
         throw error;
     }
-    proc.onaudioprocess = (e) => {
-        // Bound inference work: don't build an ever-growing backlog on slow devices.
-        if (stopped || muted || transcribing || processing) return;
-        const frame = new Float32Array(e.inputBuffer.getChannelData(0));
-        h.onLevel(rms(frame));
+    const run = (frame: Float32Array) => {
         processingGeneration = generation;
         processing = detector.process(frame, acceptsDetection)
             .catch((error: unknown) => {
@@ -133,11 +135,24 @@ export async function startMic(
                 stop();
                 h.onError(error);
             })
-            .finally(() => { processing = null; });
+            .finally(() => {
+                processing = null;
+                const next = pending.shift();
+                if (next && !stopped && !muted && !transcribing) run(next);
+            });
+    };
+    proc.onaudioprocess = (e) => {
+        if (stopped || muted || transcribing) return;
+        const frame = new Float32Array(e.inputBuffer.getChannelData(0));
+        h.onLevel(rms(frame));
+        if (!processing) return run(frame);
+        if (pending.length >= MAX_PENDING) pending.shift();
+        pending.push(frame);
     };
     const stop = () => {
         if (stopped) return;
         stopped = true;
+        pending.length = 0;
         signal?.removeEventListener("abort", stop);
         proc.onaudioprocess = null;
         for (const node of nodes) node.disconnect();
@@ -152,6 +167,7 @@ export async function startMic(
             if (stopped || muted === m) return;
             generation++;
             muted = m;
+            pending.length = 0;
             for (const t of stream.getAudioTracks()) t.enabled = !m;
             if (m && hearing) {
                 hearing = false;
@@ -241,6 +257,7 @@ export class PlaybackQueue {
     #gen = 0;
     #running = false;
     readonly analyser: AnalyserNode;
+    #volume: GainNode;
 
     constructor(
         private ctx: AudioContext,
@@ -250,6 +267,13 @@ export class PlaybackQueue {
         this.analyser = ctx.createAnalyser();
         this.analyser.fftSize = 256;
         this.analyser.connect(ctx.destination);
+        this.#volume = ctx.createGain();
+        this.#volume.connect(this.analyser);
+    }
+
+    /** Quieter while a possible interruption is checked; also feeds the mic less echo. resume() restores. */
+    duck(on: boolean) {
+        this.#volume.gain.value = on ? 0.2 : 1;
     }
 
     /** Send playback (not just cues) to another output, e.g. callAudioOutput(). */
@@ -275,7 +299,9 @@ export class PlaybackQueue {
         this.onIdle();
     }
 
+    /** Undo pause() and/or duck(): the candidate interruption was noise. */
     resume() {
+        this.duck(false);
         if (!this.#paused) return;
         this.#paused = false;
         this.#wake?.();
@@ -298,6 +324,7 @@ export class PlaybackQueue {
 
     /** Barge-in: stop now and drop everything queued. */
     clear() {
+        this.duck(false);
         this.#gen++;
         this.#queue = [];
         this.#stopCurrent?.();
@@ -325,7 +352,7 @@ export class PlaybackQueue {
                 await new Promise<void>((resolve) => {
                     const node = this.ctx.createBufferSource();
                     node.buffer = buf;
-                    node.connect(this.analyser);
+                    node.connect(this.#volume);
                     const startedAt = this.ctx.currentTime;
                     const finish = () => {
                         node.onended = null;
