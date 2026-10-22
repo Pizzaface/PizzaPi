@@ -113,9 +113,10 @@ mock.module("../remote-auth-source.js", () => ({
     getAuthSource: mock(() => null),
     authSourceLabel: mock(() => ""),
 }));
+const consumeAskMock = mock((_rctx: any, _text: string) => false);
 mock.module("../remote-ask-user.js", () => ({
     cancelPendingAskUserQuestion: mock(() => {}),
-    consumePendingAskUserQuestionFromWeb: mock(() => false),
+    consumePendingAskUserQuestionFromWeb: consumeAskMock,
     registerAskUserTool: mock(() => {}),
 }));
 mock.module("../remote-plan-mode.js", () => ({
@@ -290,4 +291,23 @@ describe("session_trigger receipt acks", () => {
 
 afterAll(() => {
     receivedTriggers.clear();
+});
+
+describe("parent free-text answer to a pending child question", () => {
+    test("parent send_message input answers the pending AskUserQuestion instead of steering", () => {
+        const { rctx, handlers } = makeHarness();
+        rctx.parentSessionId = "parent-1";
+        connect(rctx, handlers);
+        consumeAskMock.mockImplementation((_r, text) => text === "use option c");
+        const ack = mock((_delivered: boolean) => {});
+        lastSocket!.trigger("input", {
+            text: "Message from linked session parent-1:\n\nuse option c",
+            message: "use option c",
+            client: "agent",
+            fromSessionId: "parent-1",
+        }, ack);
+        expect(ack).toHaveBeenCalledWith(true);
+        expect(consumeAskMock.mock.calls.some((c) => c[1] === "use option c")).toBe(true);
+        consumeAskMock.mockImplementation(() => false);
+    });
 });
