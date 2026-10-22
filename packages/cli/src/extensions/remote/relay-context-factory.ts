@@ -37,7 +37,11 @@ const RELAY_STATUS_KEY = "relay";
 
 /** How long a contract-bearing lifecycle event may sit unanswered before the
  * server escalates it up the chain (parent → human push). */
-const LIFECYCLE_TTL_MS = 30 * 60 * 1000;
+// PIZZAPI_LIFECYCLE_TTL_MS: test/benchmark override (e.g. 60s to exercise
+// escalation in a short sandbox run).
+const LIFECYCLE_TTL_MS = Number(process.env.PIZZAPI_LIFECYCLE_TTL_MS) > 0
+    ? Number(process.env.PIZZAPI_LIFECYCLE_TTL_MS)
+    : 30 * 60 * 1000;
 
 /**
  * Publish a lifecycle trigger as a unified Event (ADR-0002). The trigger's own
