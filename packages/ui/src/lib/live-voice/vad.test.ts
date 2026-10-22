@@ -17,11 +17,13 @@ function setup(probability: (frame: Float32Array) => number = (f) => f[0]!) {
     };
     return { events, chunks, detector, feed };
 }
+/** Enough silence to pass the redemption window and end a segment. */
+const SILENCE = SPEECH_OPTIONS.redemptionMs / 32 + 4;
 
 test("loud non-speech does not pause or submit an utterance", async () => {
     const { feed, events, detector } = setup(() => 0.01);
     await feed(40, 0.9); // loud samples, low speech probability
-    await feed(20, 0);
+    await feed(SILENCE, 0);
     expect(events).toEqual([]);
     await detector.destroy();
 });
@@ -29,7 +31,7 @@ test("loud non-speech does not pause or submit an utterance", async () => {
 test("short speech-like blips are discarded without interrupting playback", async () => {
     const { feed, events, detector } = setup();
     await feed(3, 0.95);
-    await feed(20, 0);
+    await feed(SILENCE, 0);
     expect(events).toEqual(["discard"]);
     await detector.destroy();
 });
@@ -75,7 +77,7 @@ test("reset discards partial speech instead of carrying it into the next capture
     await feed(3, 0.95);
     detector.reset();
     await feed(3, 0.95);
-    await feed(20, 0);
+    await feed(SILENCE, 0);
     expect(events).toEqual(["discard"]);
     await detector.destroy();
 });

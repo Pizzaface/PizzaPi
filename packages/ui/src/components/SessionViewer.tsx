@@ -221,11 +221,14 @@ export function SessionViewer({
     setLiveAudioContext(null);
     setLiveMicStream(null);
   }, []);
-  // Live is per session: switching sessions ends the call.
+  // Live is per session and per runner service: switching sessions, or the
+  // runner's live service going away, ends the call. (The overlay's teardown
+  // closes the AudioContext and mic, so a remount on the same state would be dead.)
+  const liveAvailable = livePort != null;
   React.useEffect(() => () => {
     setLiveAudioContext(null);
     setLiveMicStream(null);
-  }, [sessionId]);
+  }, [sessionId, liveAvailable]);
   // True when the session has been stuck hydrating ("Connecting…"/"Loading
   // session…") long enough that the disabled composer needs an explanation.
   const [hydrationStuck, setHydrationStuck] = React.useState(false);

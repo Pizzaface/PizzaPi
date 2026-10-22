@@ -89,7 +89,7 @@ type Sock = Pick<ServerWebSocket<SocketState>, "data" | "send" | "close">;
 
 export const sttSocket = {
     open(ws: Sock) {
-        ws.data.release = ws.data.engine.stt.retain();
+        ws.data.release = ws.data.engine.retain();
         ws.data.engine.stt.warm().catch(() => {});
     },
     message(ws: Sock, msg: string | Buffer) {

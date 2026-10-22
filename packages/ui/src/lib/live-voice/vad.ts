@@ -8,7 +8,8 @@ export const SPEECH_OPTIONS = {
     negativeSpeechThreshold: 0.35,
     minSpeechMs: 160,
     preSpeechPadMs: 300,
-    redemptionMs: 500,
+    // A thinking pause shouldn't end (and send) the user's turn.
+    redemptionMs: 1000,
     submitUserSpeechOnPause: false,
 };
 

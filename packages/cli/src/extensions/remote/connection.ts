@@ -557,7 +557,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         const inputText = data.text;
         const isAgentInput = (data as any).client === "agent";
         if (!isAgentInput && consumePendingApprovalFromWeb(rctx, inputText)) { settle(true); return; }
+        // A parent replying to this child's question with send_message (free
+        // text rather than respond_to_trigger) is the answer, not a steer.
+        const parentAnswer = isAgentInput && fromSessionId && fromSessionId === rctx.parentSessionId
+            && typeof (data as any).message === "string" ? (data as any).message as string : null;
         if (!isAgentInput && consumePendingAskUserQuestionFromWeb(rctx, inputText)) { settle(true); return; }
+        if (parentAnswer && consumePendingAskUserQuestionFromWeb(rctx, parentAnswer)) { settle(true); return; }
         if (!isAgentInput && consumePendingPlanModeFromWeb(rctx, inputText)) { settle(true); return; }
 
         const attachments = normalizeRemoteInputAttachments(data.attachments);

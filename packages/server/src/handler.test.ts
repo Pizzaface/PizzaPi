@@ -298,9 +298,9 @@ describe("withSecurityHeaders", () => {
         expect(res.headers.get("permissions-policy")).toBe("microphone=self");
     });
 
-    test("allows first-party microphone use while keeping camera and geolocation disabled", () => {
+    test("allows first-party microphone only (not delegated to panel iframes), camera and geolocation disabled", () => {
         const res = withSecurityHeaders(new Response("ok"));
-        expect(res.headers.get("permissions-policy")).toBe("camera=(), microphone=*, geolocation=()");
+        expect(res.headers.get("permissions-policy")).toBe("camera=(), microphone=self, geolocation=()");
     });
 
     test("injects X-Frame-Options: DENY", () => {
@@ -336,6 +336,8 @@ describe("withSecurityHeaders", () => {
         try {
             const res = withSecurityHeaders(new Response("ok"));
             expect(res.headers.get("content-security-policy")).toContain("frame-src 'self' http://*.t.localhost:7492");
+            // Live voice fetches the runner's speech service on the tunnel origin directly.
+            expect(res.headers.get("content-security-policy")).toContain("connect-src 'self' ws: wss: blob: http://*.t.localhost:7492;");
         } finally {
             if (prev === undefined) delete process.env.PIZZAPI_TUNNEL_DOMAIN;
             else process.env.PIZZAPI_TUNNEL_DOMAIN = prev;
@@ -348,6 +350,7 @@ describe("withSecurityHeaders", () => {
         try {
             const res = withSecurityHeaders(new Response("ok"));
             expect(res.headers.get("content-security-policy")).not.toContain("frame-src");
+            expect(res.headers.get("content-security-policy")).toContain("connect-src 'self' ws: wss: blob:;");
         } finally {
             if (prev !== undefined) process.env.PIZZAPI_TUNNEL_DOMAIN = prev;
         }

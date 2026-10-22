@@ -102,3 +102,27 @@ test("audio graph failure releases the loaded model and stream", async () => {
     expect(released).toBe(1);
     expect(fixture.stops()).toBe(1);
 });
+
+test("frames arriving during a slow inference are queued in order, not dropped", async () => {
+    const fixture = streamFixture();
+    const { ctx, processor } = audioFixture();
+    const releases: Array<() => void> = [];
+    const seen: number[] = [];
+    spy = spyOn(vad, "createSpeechDetector").mockImplementation(async () => ({
+        process: (frame: Float32Array) => new Promise<void>((resolve) => { seen.push(frame[0]!); releases.push(resolve); }),
+        reset() {}, destroy: async () => {},
+    }));
+    const frame = (v: number) => ({ inputBuffer: { getChannelData: () => new Float32Array(2048).fill(v) } } as unknown as AudioProcessingEvent);
+    const mic = await startMic(ctx, handlers, Promise.resolve(fixture.stream));
+    try {
+        processor.onaudioprocess!(frame(1));
+        processor.onaudioprocess!(frame(2));
+        processor.onaudioprocess!(frame(3));
+        expect(seen).toEqual([1]);
+        releases.shift()!();
+        await settle();
+        releases.shift()!();
+        await settle();
+        expect(seen).toEqual([1, 2, 3]);
+    } finally { mic.stop(); }
+});
