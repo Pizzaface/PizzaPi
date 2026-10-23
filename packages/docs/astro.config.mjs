@@ -103,6 +103,7 @@ export default defineConfig({
                     { label: "Slash Commands", slug: "features/slash-commands" },
                     { label: "Plan Mode", slug: "features/plan-mode" },
                     { label: "Session Goals", slug: "features/goals" },
+                    { label: "Live Voice", slug: "features/live-voice" },
                     { label: "Pi Packages", slug: "features/pi-packages" },
                     { label: "Webhooks", slug: "features/webhooks" },
                     { label: "Triggers & Routes", slug: "features/triggers" },

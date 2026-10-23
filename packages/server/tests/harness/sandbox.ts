@@ -766,7 +766,7 @@ async function main() {
         name: "sandbox-runner",
         roots: ["/Users/jordan/Documents/Projects/PizzaPi", "/Users/jordan/Documents/Workspace"],
         platform: "darwin",
-        serviceIds: ["terminal", "file-explorer", "git", "tunnel", "time", "system-monitor", GODMOTHER_LITE_SERVICE_ID],
+        serviceIds: ["terminal", "file-explorer", "git", "tunnel", "time", "system-monitor", GODMOTHER_LITE_SERVICE_ID, ...(process.env.PIZZAPI_SANDBOX_LIVE_PORT ? ["live"] : [])],
         // A knowledge-work mode exercising the declarative mode UI contract.
         sessionModes: [{
             id: "work",
@@ -795,6 +795,10 @@ async function main() {
         panels: [
             { serviceId: "system-monitor", port: monitorPort, label: "System Monitor", icon: "activity" },
             { serviceId: GODMOTHER_LITE_SERVICE_ID, port: godmotherLitePort, label: "Godmother Lite", icon: "sparkles" },
+            // Opt-in: point at a locally running packages/live service to test the Live voice overlay.
+            ...(process.env.PIZZAPI_SANDBOX_LIVE_PORT
+                ? [{ serviceId: "live", port: Number(process.env.PIZZAPI_SANDBOX_LIVE_PORT), label: "Live", icon: "audio-lines" }]
+                : []),
         ],
         triggerDefs: [
             {

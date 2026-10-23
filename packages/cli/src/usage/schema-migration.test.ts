@@ -56,7 +56,7 @@ describe("usage.db v1 → v2 migration", () => {
     createV1Db(dbPath);
 
     const db = openUsageDb(dbPath);
-    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(2);
+    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(3);
 
     // Existing row preserved with NULL uid
     const rows = db.query<any, []>("SELECT * FROM usage_events").all();
@@ -93,7 +93,7 @@ describe("usage.db v1 → v2 migration", () => {
   test("fresh database is created directly at v2", () => {
     const tmpDir = mkdtempSync("/tmp/usage-migration-test-");
     const db = openUsageDb(join(tmpDir, "usage.db"));
-    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(2);
+    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(3);
     const cols = db.query<{ name: string }, []>("PRAGMA table_info(usage_events)").all().map((c) => c.name);
     expect(cols).toContain("event_uid");
     db.close();
