@@ -411,4 +411,60 @@ describe("remote-ask-user", () => {
             expect(result.details.source).toBe("tui");
         });
     });
+    describe("child session answer paths", () => {
+        function makeChild() {
+            let tool: any;
+            let triggerResolve: (r: any) => void = () => {};
+            const rctx: any = {
+                pi: { registerTool: (t: any) => { tool = t; } },
+                isConnected: () => true,
+                isChildSession: true,
+                parentSessionId: "parent-1",
+                relaySessionId: "child-1",
+                pendingAskUserQuestion: null,
+                relay: {},
+                setRelayStatus: () => {},
+                disconnectedStatusText: () => "",
+                forwardEvent: () => {},
+                getCurrentSessionName: () => "child",
+                emitTriggerWithAck: async () => ({ ok: true }),
+                waitForTriggerResponse: () => new Promise((r) => { triggerResolve = r; }),
+            };
+            registerAskUserTool(rctx);
+            return { rctx, tool: () => tool, respond: (r: any) => triggerResolve(r) };
+        }
+        const params = { questions: [{ question: "Pick one", options: ["a", "b"] }] };
+        const tick = () => new Promise((r) => setTimeout(r, 0));
+
+        test("free-text answer arriving as direct input resolves the blocked question", async () => {
+            const { rctx, tool } = makeChild();
+            const resultP = tool().execute("tc1", params, undefined, undefined, {});
+            await tick();
+            expect(rctx.pendingAskUserQuestion?.toolCallId).toBe("tc1");
+            rctx.pendingAskUserQuestion.resolve("neither, use c");
+            const result = await resultP;
+            expect(result.details.answer).toBe("neither, use c");
+            expect(result.details.cancelled).toBe(false);
+            expect(rctx.pendingAskUserQuestion).toBeNull();
+        });
+
+        test("respond_to_trigger answer still resolves and clears the pending entry", async () => {
+            const { rctx, tool, respond } = makeChild();
+            const resultP = tool().execute("tc2", params, undefined, undefined, {});
+            await tick();
+            respond({ response: "b", cancelled: false });
+            const result = await resultP;
+            expect(result.details.answer).toBe("b");
+            expect(rctx.pendingAskUserQuestion).toBeNull();
+        });
+
+        test("disconnect cleanup (null) keeps waiting for the parent", async () => {
+            const { rctx, tool, respond } = makeChild();
+            const resultP = tool().execute("tc3", params, undefined, undefined, {});
+            await tick();
+            rctx.pendingAskUserQuestion.resolve(null);
+            respond({ response: "a", cancelled: false });
+            expect((await resultP).details.answer).toBe("a");
+        });
+    });
 });

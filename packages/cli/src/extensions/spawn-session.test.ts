@@ -185,4 +185,15 @@ describe("spawn_session tool — autoClose", () => {
         expect(result.content[0].text).toContain("off, minimal, low, medium, high, xhigh, or max");
         expect(bodies).toHaveLength(0);
     });
+
+    test("parentSessionId attaches the new session under a session this one spawned", async () => {
+        const { tool, bodies } = setup();
+        await tool.execute("call-1", { prompt: "lead", runnerId: "r1" });
+        const bad = await tool.execute("call-2", { prompt: "rev", runnerId: "r1", parentSessionId: "someone-else" });
+        expect(bad.details.error).toBe("Invalid parentSessionId");
+        await tool.execute("call-3", { prompt: "rev", runnerId: "r1", parentSessionId: "child-1" });
+        expect(bodies).toHaveLength(2);
+        expect(bodies[0].parentSessionId).toBe("parent-session");
+        expect(bodies[1].parentSessionId).toBe("child-1");
+    });
 });

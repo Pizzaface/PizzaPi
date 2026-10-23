@@ -20,6 +20,11 @@ function respondLine(triggerId: string): string {
 
 // ── Built-in renderers ──────────────────────────────────────────────────────
 
+/** A child question addressed to the human (AskUserQuestion audience: "human"). */
+export function isHumanAudienceQuestion(trigger: Pick<ConversationTrigger, "type" | "payload">): boolean {
+    return trigger.type === "lifecycle:ask_question" && trigger.payload?.audience === "human";
+}
+
 const askUserQuestionRenderer: TriggerRenderer = {
     type: "lifecycle:ask_question",
     render(trigger) {
@@ -31,6 +36,14 @@ const askUserQuestionRenderer: TriggerRenderer = {
             ? (trigger.payload.options as string[])
             : [];
 
+        if (isHumanAudienceQuestion(trigger)) {
+            return [
+                `🔗 Child "${name}" asked the user directly:`,
+                `> ${question}`,
+                "",
+                "Forwarded to the user automatically; their answer goes straight to the child. No action needed — do not answer, relay, or re-ask it.",
+            ].join("\n");
+        }
         const lines = [`🔗 Child "${name}" asks:`, `> ${question}`];
         if (options.length > 0) {
             lines.push(`Options: ${options.map((o, i) => `${i + 1}. ${o}`).join("  ")}`);

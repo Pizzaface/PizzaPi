@@ -72,6 +72,11 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         return display ? ` in ${display}` : "";
     }
 
+    // Sessions this session spawned (direct, or attached under one of them) —
+    // the only valid re-parent targets for parentSessionId.
+    // ponytail: in-memory; lost on worker restart, so re-parenting needs a fresh spawn after one.
+    const spawnedChildren = new Set<string>();
+
     pi.registerTool({
         name: "spawn_session",
         label: "Spawn Session",
@@ -119,6 +124,13 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     description:
                         "Runner ID to spawn on. Usually not needed — defaults to the current runner.",
                 },
+                parentSessionId: {
+                    type: "string",
+                    description:
+                        "Optional: attach the new session under a session YOU spawned (e.g. a reviewer under the " +
+                        "implementer). Its findings, questions and completion then go straight to that session " +
+                        "instead of through you. Defaults to you.",
+                },
                 autoClose: {
                     type: "boolean",
                     description:
@@ -137,6 +149,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 effort?: ThinkingLevel;
                 cwd?: string;
                 runnerId?: string;
+                parentSessionId?: string;
                 autoClose?: boolean;
             };
 
@@ -189,7 +202,17 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     { error: "No linked parent session available" },
                 );
             }
-            body.parentSessionId = ownSessionId;
+            if (params.parentSessionId && params.parentSessionId !== ownSessionId) {
+                if (!spawnedChildren.has(params.parentSessionId)) {
+                    return ok(
+                        `Error: parentSessionId must be a session you spawned (${[...spawnedChildren].join(", ") || "none yet"}).`,
+                        { error: "Invalid parentSessionId" },
+                    );
+                }
+                body.parentSessionId = params.parentSessionId;
+            } else {
+                body.parentSessionId = ownSessionId;
+            }
 
             // Default to auto-close so completed children don't idle forever on the
             // runner. Auto-close itself is guarded: it won't fire if new messages,
@@ -228,6 +251,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 }
 
                 const sessionId = result.sessionId as string;
+                spawnedChildren.add(sessionId);
                 const pending = result.pending === true;
                 const shareUrl = `${relayBase}/session/${sessionId}`;
 
@@ -238,6 +262,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     `  Working directory: ${cwd}`,
                     params.model ? `  Model: ${params.model.provider}/${params.model.id}` : null,
                     params.effort ? `  Effort: ${params.effort}` : null,
+                    body.parentSessionId !== ownSessionId ? `  Parent: ${body.parentSessionId} (its triggers go there, not to you)` : null,
                     pending ? `  Status: Pending (worker is starting up)` : `  Status: Ready`,
                     `  Web UI: ${shareUrl}`,
                 ].filter(Boolean).join("\n");

@@ -386,6 +386,11 @@ export function registerAskUserTool(rctx: RelayContext) {
                         required: ["question", "options"],
                     },
                 },
+                audience: {
+                    type: "string",
+                    enum: ["parent", "human"],
+                    description: "Child sessions only. Default \"parent\": your parent agent answers. Use \"human\" when only the user can answer (their preferences, decisions reserved for them, secrets, physical actions) — it goes straight to the user, skipping every agent in between.",
+                },
                 display: {
                     type: "string",
                     enum: ["stepper"],
@@ -452,6 +457,7 @@ export function registerAskUserTool(rctx: RelayContext) {
                         question: questions.map(q => q.question).join("; "),
                         options: questions.flatMap(q => q.options),
                         questions,
+                        ...(params.audience === "human" ? { audience: "human" } : {}),
                     },
                     // steer: the child is blocked waiting on this answer (indefinitely,
                     // see waitForTriggerResponse) — the parent must be interrupted to see
@@ -479,7 +485,33 @@ export function registerAskUserTool(rctx: RelayContext) {
                 }
 
                 // No timeout: wait until the parent actually responds (or cancels).
-                const triggerResult = await rctx.waitForTriggerResponse(triggerId, undefined, signal);
+                // Also accept a direct answer while blocked: the parent's
+                // send_message (free text instead of respond_to_trigger) or the
+                // web stepper in this child's viewer. Without this pending
+                // entry those arrive as a steer the blocked tool never sees.
+                const waitAbort = new AbortController();
+                const onAbort = () => waitAbort.abort();
+                signal?.addEventListener("abort", onAbort, { once: true });
+                const directAnswer = new Promise<{ response: string; cancelled: false }>((resolve) => {
+                    rctx.pendingAskUserQuestion = {
+                        toolCallId,
+                        questions,
+                        display,
+                        // null = disconnect cleanup; keep waiting on the trigger.
+                        resolve: (answer) => { if (answer) resolve({ response: answer, cancelled: false }); },
+                    };
+                });
+                const triggerResult = await Promise.race([
+                    rctx.waitForTriggerResponse(triggerId, undefined, waitAbort.signal),
+                    directAnswer,
+                ]).finally(() => {
+                    waitAbort.abort();
+                    signal?.removeEventListener("abort", onAbort);
+                    if (rctx.pendingAskUserQuestion?.toolCallId === toolCallId) {
+                        rctx.pendingAskUserQuestion = null;
+                        emitQuestionCleared(rctx, toolCallId);
+                    }
+                });
 
                 return {
                     content: [{ type: "text", text: triggerResult.response }],

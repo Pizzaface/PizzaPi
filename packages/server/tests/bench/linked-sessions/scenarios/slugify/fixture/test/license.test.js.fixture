@@ -1,0 +1,13 @@
+// Project rule: every .js file under src/ and test/ starts with the license
+// header line. The license id is the maintainer's decision (see README).
+import { test, expect } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const root = join(import.meta.dir, "..");
+const files = ["src", "test"].flatMap((d) =>
+  readdirSync(join(root, d)).filter((f) => f.endsWith(".js") && f !== "license.test.js").map((f) => join(d, f)));
+
+test.each(files)("%s starts with an SPDX license header", (f) => {
+  expect(readFileSync(join(root, f), "utf8").split("\n")[0]).toMatch(/^\/\/ SPDX-License-Identifier: \S+$/);
+});

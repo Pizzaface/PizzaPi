@@ -72,6 +72,24 @@ describe("renderTrigger", () => {
         });
     });
 
+    describe("lifecycle:ask_question audience human", () => {
+        it("renders an FYI with no respond instruction", () => {
+            const text = renderTrigger({
+                type: "lifecycle:ask_question",
+                sourceSessionId: "c1",
+                sourceSessionName: "Lead",
+                targetSessionId: "p1",
+                payload: { question: "Which license?", options: [], audience: "human" },
+                deliverAs: "followUp",
+                expectsResponse: false,
+                triggerId: "t-h",
+                ts: new Date().toISOString(),
+            } as any);
+            expect(text).toContain("asked the user directly");
+            expect(text).not.toContain("respond_to_trigger");
+        });
+    });
+
     describe("lifecycle:plan_review", () => {
         it("renders plan title, steps, and instructions", () => {
             const trigger = makeTrigger({

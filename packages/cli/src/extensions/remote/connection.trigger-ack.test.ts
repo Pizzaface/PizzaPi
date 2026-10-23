@@ -113,9 +113,10 @@ mock.module("../remote-auth-source.js", () => ({
     getAuthSource: mock(() => null),
     authSourceLabel: mock(() => ""),
 }));
+const consumeAskMock = mock((_rctx: any, _text: string) => false);
 mock.module("../remote-ask-user.js", () => ({
     cancelPendingAskUserQuestion: mock(() => {}),
-    consumePendingAskUserQuestionFromWeb: mock(() => false),
+    consumePendingAskUserQuestionFromWeb: consumeAskMock,
     registerAskUserTool: mock(() => {}),
 }));
 mock.module("../remote-plan-mode.js", () => ({
@@ -136,6 +137,10 @@ mock.module("./registration-gate.js", () => ({
 mock.module("../remote-registered-parent-state.js", () => ({
     decideRegisteredParentState: mock(() => ({ kind: "no_change" })),
 }));
+
+const realTriggerClient = await import("../trigger-client.js");
+const escalateMock = mock(async (_id: string) => ({ ok: true, escalatedTo: "human" } as { ok: boolean; escalatedTo?: string; error?: string }));
+mock.module("../trigger-client.js", () => ({ ...realTriggerClient, escalateDelivery: escalateMock }));
 
 const { connect } = await import("./connection.js");
 const { receivedTriggers } = await import("../triggers/extension.js");
@@ -290,4 +295,54 @@ describe("session_trigger receipt acks", () => {
 
 afterAll(() => {
     receivedTriggers.clear();
+});
+
+describe("parent free-text answer to a pending child question", () => {
+    test("parent send_message input answers the pending AskUserQuestion instead of steering", () => {
+        const { rctx, handlers } = makeHarness();
+        rctx.parentSessionId = "parent-1";
+        connect(rctx, handlers);
+        consumeAskMock.mockImplementation((_r, text) => text === "use option c");
+        const ack = mock((_delivered: boolean) => {});
+        lastSocket!.trigger("input", {
+            text: "Message from linked session parent-1:\n\nuse option c",
+            message: "use option c",
+            client: "agent",
+            fromSessionId: "parent-1",
+        }, ack);
+        expect(ack).toHaveBeenCalledWith(true);
+        expect(consumeAskMock.mock.calls.some((c) => c[1] === "use option c")).toBe(true);
+        consumeAskMock.mockImplementation(() => false);
+    });
+});
+
+describe("child questions addressed to the human", () => {
+    afterEach(() => receivedTriggers.clear());
+    const humanAsk = (id: string) => ({
+        type: "lifecycle:ask_question", sourceSessionId: "child-1", sourceSessionName: "Lead",
+        triggerId: id, payload: { question: "Which license?", options: [], audience: "human" },
+        deliverAs: "steer", expectsResponse: true, ts: new Date().toISOString(),
+    });
+
+    test("auto-forwards up the chain and injects a non-answerable FYI", async () => {
+        const { rctx, handlers, sendCustomMessage } = makeHarness();
+        connect(rctx, handlers);
+        escalateMock.mockClear();
+        lastSocket!.trigger("session_trigger", { trigger: humanAsk("h1") });
+        await sleep(150);
+        expect(escalateMock).toHaveBeenCalledWith("h1");
+        const content = String(sendCustomMessage.mock.calls.at(-1)?.[1] ?? JSON.stringify(sendCustomMessage.mock.calls.at(-1)));
+        expect(content).toContain("asked the user directly");
+        expect(content).not.toContain("respond_to_trigger");
+    });
+
+    test("falls back to a normal answerable question when forwarding fails", async () => {
+        const { rctx, handlers, sendCustomMessage } = makeHarness();
+        connect(rctx, handlers);
+        escalateMock.mockImplementationOnce(async () => ({ ok: false, error: "boom" }));
+        lastSocket!.trigger("session_trigger", { trigger: humanAsk("h2") });
+        await sleep(150);
+        const content = JSON.stringify(sendCustomMessage.mock.calls.at(-1));
+        expect(content).toContain("respond_to_trigger");
+    });
 });
