@@ -13,7 +13,7 @@
  * resource is the Claude Code credential, read in place via CLAUDE_CONFIG_DIR.
  */
 import { io } from "socket.io-client";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, existsSync, readdirSync, statSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
@@ -97,7 +97,8 @@ async function runOnce(i: number) {
 
     // ── Real runner daemon from the variant's CLI ──────────────────────────
     const runnerLog = join(dir, "runner.log");
-    const runner = spawn("bash", ["-c", `exec bun ${join(variant, "packages/cli/src/index.ts")} runner > ${runnerLog} 2>&1`], {
+    const runnerLogFd = openSync(runnerLog, "w");
+    const runner = spawn("bun", [join(variant, "packages/cli/src/index.ts"), "runner"], {
       cwd: home,
       env: {
         PATH: process.env.PATH!, HOME: home, TERM: "xterm-256color",
@@ -109,6 +110,7 @@ async function runOnce(i: number) {
         PIZZAPI_RUNNER_STATE_PATH: join(home, "runner-state.json"),
         PIZZAPI_LIFECYCLE_TTL_MS: String(ttlMs),
       },
+      stdio: ["ignore", runnerLogFd, runnerLogFd],
     });
     procs.push(runner);
     const runnerId = (await waitForLog(runnerLog, /registered as ([0-9a-f-]{36})/, 60_000))[1];
