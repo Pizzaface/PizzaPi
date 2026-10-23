@@ -662,6 +662,7 @@ function proxyTunnelRequestViaRelay(
     /** Set for capability-authenticated routes (token/label) — see TunnelRequestStartMessage. */
     capabilityAgeMs?: number,
 ): Promise<Response> {
+    if (req.signal.aborted) return Promise.resolve(new Response(null, { status: 499 }));
     const oversized = rejectOversizedTunnelBody(req, relay);
     if (oversized) return Promise.resolve(oversized);
     const maxStreamBufferedBytes = relay.limits.maxBufferedBytes;
@@ -681,7 +682,7 @@ function proxyTunnelRequestViaRelay(
         const removeClientAbortListener = (): void => {
             if (!clientAbortListenerAttached) return;
             clientAbortListenerAttached = false;
-            req.signal.removeEventListener("abort", cancelRequest);
+            req.signal.removeEventListener("abort", onClientAbort);
         };
         const finishRequestBody = (): void => {
             removeClientAbortListener();
@@ -691,7 +692,6 @@ function proxyTunnelRequestViaRelay(
             finishRequestBody();
             cancelRelay();
         };
-        req.signal.addEventListener("abort", cancelRequest, { once: true });
         let responseStarted = false;
         let resolved = false;
         let statusCode = 502;
@@ -729,6 +729,15 @@ function proxyTunnelRequestViaRelay(
             resolved = true;
             resolve(response);
         };
+
+        const onClientAbort = (): void => {
+            cancelRequest();
+            // cancel() removes the relay callback and its timeout. Settle here,
+            // otherwise a disconnected viewer leaves this handler pending forever.
+            if (!resolved) resolveOnce(new Response(null, { status: 499 }));
+            else errorStream(new Error("Viewer disconnected"));
+        };
+        req.signal.addEventListener("abort", onClientAbort, { once: true });
 
         const markRewriteSkippedForSize = (): void => {
             responseHeaders.set("x-pizzapi-rewrite", "skipped-size");
@@ -914,7 +923,7 @@ function proxyTunnelRequestViaRelay(
         );
         relayCancel = cancel;
         if (relayCancelRequested) cancelRelay();
-        if (req.signal.aborted) cancelRequest();
+        if (req.signal.aborted) onClientAbort();
 
         void streamRequestBodyToRelay(req, relay, runnerId, requestId, bodyAbortController.signal).catch((error) => {
             cancelRequest();
@@ -950,6 +959,9 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
         return Response.json({ error: "Invalid JSON" }, { status: 400 });
     }
 
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return Response.json({ error: "Expected a JSON object" }, { status: 400 });
+    }
     const data = body as { sessionId?: unknown; runnerId?: unknown; port?: unknown; ttlHours?: unknown };
     const sessionId = typeof data.sessionId === "string" ? data.sessionId : "";
     const runnerId = typeof data.runnerId === "string" ? data.runnerId : "";

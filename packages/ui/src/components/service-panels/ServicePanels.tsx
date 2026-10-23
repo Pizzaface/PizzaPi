@@ -316,6 +316,11 @@ export function useServicePanelState(
         });
     }, []);
 
+    // Server notifications can be duplicated or batched before a render.
+    const openPanel = useCallback((serviceId: string) => {
+        setActivePanelIds(prev => prev.has(serviceId) ? prev : new Set([...prev, serviceId]));
+    }, []);
+
     const closePanelById = useCallback((serviceId: string) => {
         setActivePanelIds(prev => {
             const next = new Set(prev);
@@ -389,5 +394,5 @@ export function useServicePanelState(
         return panelNavParams.get(serviceId);
     }, [panelNavParams]);
 
-    return { activePanelIds, togglePanel, closePanelById, closeAllPanels, getPanelPosition, setPanelPosition, setEphemeralPanelPosition, getNavParams };
+    return { activePanelIds, togglePanel, openPanel, closePanelById, closeAllPanels, getPanelPosition, setPanelPosition, setEphemeralPanelPosition, getNavParams };
 }

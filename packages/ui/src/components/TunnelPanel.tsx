@@ -81,16 +81,12 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
     const canManage = live && ready && (!scopedRunnerId || !!targetSessionId);
 
     useEffect(() => {
-        if (canManage) {
-            send("tunnel_list", {});
-        } else {
-            // Clear stale state immediately on disconnect so that when the
-            // socket reconnects and `live` flips back to true, the panel
-            // does not briefly flash the previous (dead) tunnel entries.
-            setTunnels([]);
-            setPreviewPort(null);
-            setDetachedGone(false);
-        }
+        // Listings and controls belong to this session. Do not keep the previous
+        // session's tabs/selection while waiting for its replacement listing.
+        setTunnels([]);
+        setPreviewPort(null);
+        setDetachedGone(false);
+        if (canManage) send("tunnel_list", {});
     }, [canManage, send, targetSessionId, live]);
 
     // Auto-preview the first tunnel when it appears (detached panels are pinned

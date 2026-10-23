@@ -64,6 +64,39 @@ describe("TunnelRelay authorization", () => {
     expect(JSON.parse(mock.sent[0])).toEqual({ type: "registered", runnerId: "r1" });
   });
 
+  test("one socket cannot register two runner identities and leave a ghost after disconnect", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mock = createMockWebSocket();
+    relay.handleConnection(mock.ws);
+    try {
+      // Both authorizations may be pending at once.
+      for (const runnerId of ["r1", "r2"]) mock.emit("message", {
+        data: JSON.stringify({ type: "register", runnerId, apiKey: "key1" }),
+      });
+      await waitForMicrotask();
+      expect(relay.hasRunner("r1")).toBe(true);
+      expect(relay.hasRunner("r2")).toBe(false);
+      mock.ws.close();
+      expect(relay.hasRunner("r1")).toBe(false);
+      expect(relay.hasRunner("r2")).toBe(false);
+    } finally { relay.dispose(); }
+  });
+
+  test("a repeated registration on the same socket is idempotent", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mock = createMockWebSocket();
+    relay.handleConnection(mock.ws);
+    try {
+      for (let i = 0; i < 2; i++) {
+        mock.emit("message", { data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }) });
+        await waitForMicrotask();
+      }
+      expect(mock.closed).toBe(false);
+      expect(relay.getRunner("r1")).toBe(mock.ws);
+      expect(mock.sent.map(m => JSON.parse(m)).filter(m => m.type === "registered")).toHaveLength(2);
+    } finally { relay.dispose(); }
+  });
+
   test("rejects invalid API key", async () => {
     const relay = new TunnelRelay({ apiKeys: ["key1"] });
     const mock = createMockWebSocket();
