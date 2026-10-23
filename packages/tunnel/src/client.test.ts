@@ -68,6 +68,42 @@ describe("TunnelClient", () => {
     expect(client).toBeDefined();
   });
 
+  test("unexpose terminates existing HTTP streams and WebSockets, not just new requests", async () => {
+    const client = new TunnelClient({ runnerId: "r1", apiKey: "key1", relayUrl: "ws://localhost:9999/_tunnel" });
+    const sent = attachMockRelay(client);
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write("data: still connected\n\n");
+    });
+    const wsServer = Bun.serve({
+      port: 0, hostname: "127.0.0.1",
+      fetch(req, server) { return server.upgrade(req) ? undefined : new Response("not upgraded", { status: 400 }); },
+      websocket: { message() {} },
+    });
+    try {
+      for (const p of [port, wsServer.port!]) {
+        (client as any).exposedPorts.add(p);
+        (client as any).portProtocol.set(p, "http");
+      }
+      (client as any).handleRequestStart({ id: "stream", port, method: "GET", url: "/", headers: {} });
+      (client as any).handleRequestDataEnd({ id: "stream" });
+      (client as any).handleWsOpen({ id: "socket", port: wsServer.port!, path: "/", headers: {} });
+      await waitUntil(() => decodeSent(sent).some(m => m.type === "response-data") && decodeSent(sent).some(m => m.type === "ws-opened"));
+      client.unexposePort(port);
+      expect(decodeSent(sent).some(m => m.type === "response-data-abort" && m.id === "stream")).toBe(true);
+      expect((client as any).activeWs.has("socket")).toBe(true); // other port survives
+      client.unexposePort(wsServer.port!);
+      expect(decodeSent(sent).some(m => m.type === "ws-close" && m.id === "socket")).toBe(true);
+      expect((client as any).activeRequests.size).toBe(0);
+      expect((client as any).activeWs.size).toBe(0);
+    } finally {
+      (client as any).ws = null; // the relay stub has no browser close-event API
+      await client.dispose();
+      wsServer.stop(true);
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   test("exposes port management API", () => {
     const client = new TunnelClient({
       runnerId: "r1",

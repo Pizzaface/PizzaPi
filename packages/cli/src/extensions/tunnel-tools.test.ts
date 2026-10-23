@@ -1,10 +1,27 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 import { createTunnelToolsExtension } from "./tunnel-tools.js";
 
 const mockGetRelaySocket = mock(() => null as any);
 const mockGetRelaySessionId = mock(() => null as string | null);
-const mockLoadConfig = mock((_cwd: string) => ({ relayUrl: "ws://localhost:7492" } as any));
+const mockLoadConfig = mock((_cwd?: string) => ({ relayUrl: "ws://localhost:7492" } as any));
 const mockGetRunnerId = mock(() => null as string | null);
+
+// Never mint against the developer's relay or inherit real credentials.
+const originalEnv = { PIZZAPI_API_KEY: process.env.PIZZAPI_API_KEY, PIZZAPI_API_TOKEN: process.env.PIZZAPI_API_TOKEN, PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL };
+const originalFetch = globalThis.fetch;
+beforeEach(() => {
+    delete process.env.PIZZAPI_API_KEY;
+    delete process.env.PIZZAPI_API_TOKEN;
+    process.env.PIZZAPI_RELAY_URL = "ws://localhost:7492";
+    globalThis.fetch = (async () => { throw new Error("Unexpected network request in tunnel unit test"); }) as unknown as typeof fetch;
+});
+afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+    }
+});
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -137,7 +154,8 @@ describe("tunnelToolsExtension", () => {
             expect(result.details.port).toBe(3000);
             expect(result.details.name).toBe("dev");
             // With no runner ID, falls back to session-based URL
-            expect(result.details.publicUrl).toContain("/api/tunnel/sess-123/3000/");
+            expect(result.details.publicUrl).toBeNull();
+            expect(result.details.browserUrl).toContain("/api/tunnel/sess-123/3000/");
         });
 
         test("returns error on tunnel_error response", async () => {
@@ -269,6 +287,71 @@ describe("buildPublicTunnelUrl", () => {
         mockLoadConfig.mockReturnValue({ relayUrl: "ws://localhost:7492" } as any);
     });
 
+    test.each(["config", "token", "key"])("mints using %s credentials", async (source) => {
+        if (source === "config") mockLoadConfig.mockReturnValue({ apiKey: "credential" } as any);
+        else process.env[source === "token" ? "PIZZAPI_API_TOKEN" : "PIZZAPI_API_KEY"] = "credential";
+        const seen: string[] = [];
+        globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+            seen.push(new Headers(init.headers).get("x-api-key")!);
+            return Response.json({ url: "/api/tunnel/auth/signed/runner:r1/8080/" });
+        }) as typeof fetch;
+        const sock = mockSocket();
+        sock.emit = (_event, data: any) => sock.simulateMessage({ serviceId: "tunnel", type: "tunnel_registered", requestId: data.requestId, payload: { port: 8080, url: "/tunnel/8080" } });
+        mockGetRelaySocket.mockReturnValue({ socket: sock });
+        mockGetRunnerId.mockReturnValue("r1");
+        const pi = createMockPi();
+        createTunnelToolsExtension({ getRelaySocket: mockGetRelaySocket as any, getRelaySessionId: mockGetRelaySessionId, loadConfig: mockLoadConfig, getRunnerId: mockGetRunnerId })(pi as any);
+        const result = await pi.tools.get("create_tunnel")!.execute("call", { port: 8080 });
+        expect(seen).toEqual(["credential"]);
+        expect(result.details.publicUrl).toContain("/api/tunnel/auth/signed/");
+    });
+
+    test("close_tunnel reports the runner's rejection instead of pretending success", async () => {
+        const sock = mockSocket();
+        sock.emit = (_event, data: any) => {
+            sock.simulateMessage({ serviceId: "tunnel", type: "tunnel_removed", requestId: "other-request", payload: { port: 8080 } });
+            sock.simulateMessage({ serviceId: "tunnel", type: "tunnel_error", requestId: data.requestId, payload: { error: "Port is not exposed by this session" } });
+        };
+        mockGetRelaySocket.mockReturnValue({ socket: sock });
+        const pi = createMockPi();
+        createTunnelToolsExtension({ getRelaySocket: mockGetRelaySocket as any, getRelaySessionId: mockGetRelaySessionId, loadConfig: mockLoadConfig, getRunnerId: mockGetRunnerId })(pi as any);
+        const result = await pi.tools.get("close_tunnel")!.execute("call", { port: 8080 });
+        expect(result.details.error).toContain("not exposed by this session");
+        expect(result.details.closed).not.toBe(true);
+    });
+
+    test("close_tunnel timeout reports unconfirmed closure and removes its listener", async () => {
+        const sock = mockSocket();
+        mockGetRelaySocket.mockReturnValue({ socket: sock });
+        const pi = createMockPi();
+        createTunnelToolsExtension({ getRelaySocket: mockGetRelaySocket as any, getRelaySessionId: mockGetRelaySessionId, loadConfig: mockLoadConfig, getRunnerId: mockGetRunnerId })(pi as any);
+        const setTimeoutBefore = globalThis.setTimeout;
+        // Exercise the real timeout callback without adding ten seconds to CI.
+        globalThis.setTimeout = ((fn: (...args: any[]) => void, ms?: number, ...args: any[]) => setTimeoutBefore(fn, ms === 10_000 ? 0 : ms, ...args)) as typeof setTimeout;
+        try {
+            const result = await pi.tools.get("close_tunnel")!.execute("call", { port: 8080 });
+            expect(result.details.error).toContain("unconfirmed");
+            expect(result.details.closed).not.toBe(true);
+            expect(sock._listeners.get("service_message")?.size).toBe(0);
+        } finally { globalThis.setTimeout = setTimeoutBefore; }
+    });
+
+    test("mint failure does not mislabel a cookie-only URL as public", async () => {
+        process.env.PIZZAPI_API_KEY = "credential";
+        globalThis.fetch = (async () => new Response("denied", { status: 401 })) as unknown as typeof fetch;
+        const sock = mockSocket();
+        sock.emit = (_event, data: any) => sock.simulateMessage({ serviceId: "tunnel", type: "tunnel_registered", requestId: data.requestId, payload: { port: 8080, url: "/tunnel/8080" } });
+        mockGetRelaySocket.mockReturnValue({ socket: sock });
+        mockGetRunnerId.mockReturnValue("r1");
+        const pi = createMockPi();
+        createTunnelToolsExtension({ getRelaySocket: mockGetRelaySocket as any, getRelaySessionId: mockGetRelaySessionId, loadConfig: mockLoadConfig, getRunnerId: mockGetRunnerId })(pi as any);
+        const result = await pi.tools.get("create_tunnel")!.execute("call", { port: 8080 });
+        expect(result.details.publicUrl).toBeNull();
+        expect(result.details.browserUrl).toContain("/api/tunnel/runner/r1/");
+        expect(result.details.warning).toContain("401");
+        expect(extractText(result)).toContain("requires browser login");
+    });
+
     test("prefers runner-based URL when runner ID is available", async () => {
         const sock = mockSocket();
         sock.emit = (_event: string, data: unknown) => {
@@ -298,7 +381,8 @@ describe("buildPublicTunnelUrl", () => {
         const tool = pi.tools.get("create_tunnel")!;
         const result = await tool.execute("call-1", { port: 8080 });
 
-        expect(result.details.publicUrl).toBe("http://127.0.0.1:7492/api/tunnel/runner/runner-abc/8080/");
+        expect(result.details.publicUrl).toBeNull();
+        expect(result.details.browserUrl).toBe("http://127.0.0.1:7492/api/tunnel/runner/runner-abc/8080/");
 
         if (savedRelayUrl !== undefined) process.env.PIZZAPI_RELAY_URL = savedRelayUrl;
         else delete process.env.PIZZAPI_RELAY_URL;
@@ -333,7 +417,8 @@ describe("buildPublicTunnelUrl", () => {
         const result = await tool.execute("call-1", { port: 8080 });
 
         // No runner ID mocked, falls back to session-based URL
-        expect(result.details.publicUrl).toBe("http://127.0.0.1:7492/api/tunnel/abc-def-123/8080/");
+        expect(result.details.publicUrl).toBeNull();
+        expect(result.details.browserUrl).toBe("http://127.0.0.1:7492/api/tunnel/abc-def-123/8080/");
 
         // Restore
         if (savedRelayUrl !== undefined) process.env.PIZZAPI_RELAY_URL = savedRelayUrl;

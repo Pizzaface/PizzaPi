@@ -87,6 +87,12 @@ const call = (url: string, init?: RequestInit) =>
     });
 
 describe("runner tunnel auth", () => {
+    test("mint rejects null JSON with 400 instead of throwing", async () => {
+        const res = await call("http://localhost:7492/api/tunnel-token", {
+            method: "POST", headers: { cookie, "content-type": "application/json" }, body: "null",
+        });
+        expect(res.status).toBe(400);
+    });
     test("anonymous → 401", async () => {
         const res = await call(`${BASE}/`);
         expect(res.status).toBe(401);

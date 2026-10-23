@@ -115,6 +115,8 @@ export function verifyTunnelToken(token: string, nowMs = Date.now()): TunnelToke
         return null;
     }
 
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+
     // Legacy tokens pre-dating aud/iat/kid claims had a 1 h TTL and that
     // compat window has long since closed — every live token now carries a
     // kid. Reject anything without one instead of falling back to an
@@ -139,7 +141,7 @@ export function verifyTunnelToken(token: string, nowMs = Date.now()): TunnelToke
     if (payload.aud !== TUNNEL_TOKEN_AUD) return null;
 
     if (payload.v !== 1) return null;
-    if (!payload.userId || !payload.sessionId) return null;
+    if (typeof payload.userId !== "string" || !payload.userId || typeof payload.sessionId !== "string" || !payload.sessionId) return null;
     if (!Number.isInteger(payload.port) || payload.port < 1 || payload.port > 65535) return null;
     if (!Number.isFinite(payload.exp) || payload.exp <= Math.floor(nowMs / 1000)) return null;
     return payload;

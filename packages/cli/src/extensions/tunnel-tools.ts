@@ -147,21 +147,21 @@ function buildPublicTunnelUrl(deps: TunnelToolsDeps, port: number): string | nul
  * relay session (cookie), so pasting it anywhere else 401s. Mint instead:
  * `hostUrl` (dedicated subdomain origin, when the relay sets
  * PIZZAPI_TUNNEL_DOMAIN) else the signed `/api/tunnel/auth/<token>/...` path,
- * which carries its own credential. Falls back to the cookie-gated URL when no
- * API key / relay is available.
+ * which carries its own credential. If minting fails, report the failure and
+ * distinguish the login-only browser URL from a genuinely shareable link.
  *
  * ponytail: mints on every call, no cache — tokens are short-lived and
  * create/list are rare. Add a TTL cache if tunnel listing ever gets hot.
  */
-async function buildShareableTunnelUrl(deps: TunnelToolsDeps, port: number, ttlHours?: number): Promise<string | null> {
-    const fallback = buildPublicTunnelUrl(deps, port);
+async function buildShareableTunnelUrl(deps: TunnelToolsDeps, port: number, ttlHours?: number): Promise<{ publicUrl: string | null; browserUrl: string | null; warning: string | null }> {
+    const fallback = (warning: string) => ({ publicUrl: null, browserUrl: buildPublicTunnelUrl(deps, port), warning });
     const base = getRelayHttpBaseUrl(deps);
-    const apiKey = process.env.PIZZAPI_API_KEY;
-    if (!base || !apiKey) return fallback;
+    const apiKey = process.env.PIZZAPI_API_KEY ?? process.env.PIZZAPI_API_TOKEN ?? deps.loadConfig(process.cwd()).apiKey;
+    if (!base || !apiKey) return fallback("Cannot mint a shareable link: relay URL or API key unavailable.");
 
     const runnerId = deps.getRunnerId();
     const sessionId = deps.getRelaySessionId();
-    if (!runnerId && !sessionId) return fallback;
+    if (!runnerId && !sessionId) return fallback("Cannot mint a shareable link: session and runner ID unavailable.");
 
     try {
         const res = await fetch(`${base}/api/tunnel-token`, {
@@ -170,14 +170,16 @@ async function buildShareableTunnelUrl(deps: TunnelToolsDeps, port: number, ttlH
             body: JSON.stringify({ ...(runnerId ? { runnerId } : { sessionId }), port, ...(ttlHours ? { ttlHours } : {}) }),
             signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS),
         });
-        if (!res.ok) return fallback;
-        const data = (await res.json()) as { url?: string; hostUrl?: string };
-        if (data.hostUrl) return data.hostUrl;
-        if (data.url) return `${base}${data.url}`;
+        if (!res.ok) return fallback(`Cannot mint a shareable link: HTTP ${res.status}.`);
+        const data = (await res.json()) as { url?: unknown; hostUrl?: unknown } | null;
+        const publicUrl = typeof data?.hostUrl === "string" && /^https?:\/\//.test(data.hostUrl)
+            ? data.hostUrl
+            : typeof data?.url === "string" && data.url.startsWith("/api/tunnel/auth/") ? `${base}${data.url}` : null;
+        if (publicUrl) return { publicUrl, browserUrl: null, warning: null };
+        return fallback("Cannot mint a shareable link: response missing a signed tunnel URL.");
     } catch {
-        // Relay unreachable / token mint failed — keep the cookie-gated URL.
+        return fallback("Cannot mint a shareable link: relay request failed.");
     }
-    return fallback;
 }
 
 function ok(text: string, details?: Record<string, unknown>) {
@@ -237,20 +239,22 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
 
                 if (response.type === "tunnel_registered") {
                     const info = response.payload as TunnelInfo;
-                    const publicUrl = await buildShareableTunnelUrl(deps, info.port, params.ttlHours);
+                    const link = await buildShareableTunnelUrl(deps, info.port, params.ttlHours);
 
                     const lines = [
                         `Tunnel created successfully.`,
                         `  Port: ${info.port}`,
                         info.name ? `  Name: ${info.name}` : null,
-                        publicUrl ? `  Public URL: ${publicUrl}` : `  URL: ${info.url}`,
+                        link.publicUrl ? `  Public URL: ${link.publicUrl}` : null,
+                        link.browserUrl ? `  Browser URL (requires browser login): ${link.browserUrl}` : null,
+                        link.warning ? `  Warning: ${link.warning} Port ${info.port} is still exposed; retry list_tunnels after fixing credentials.` : null,
                     ].filter(Boolean).join("\n");
 
                     return ok(lines, {
                         port: info.port,
                         name: info.name ?? null,
                         url: info.url,
-                        publicUrl: publicUrl ?? null,
+                        ...link,
                     });
                 }
 
@@ -283,6 +287,9 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
             }
 
             const port = details?.port ?? "?";
+            if (typeof details?.warning === "string") {
+                return new Text(theme.fg("warning", `⚠ tunnel :${port} exposed — ${details.warning}`), 0, 0);
+            }
             const url = typeof details?.publicUrl === "string" ? ` ${details.publicUrl}` : "";
             return new Text(
                 theme.fg("success", "✓") + " " +
@@ -322,7 +329,7 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
                             port: t.port,
                             name: t.name ?? null,
                             url: t.url,
-                            publicUrl: (await buildShareableTunnelUrl(deps, t.port, ttlHours)) ?? null,
+                            ...await buildShareableTunnelUrl(deps, t.port, ttlHours),
                             pinned: t.pinned ?? false,
                         })),
                     );
@@ -336,8 +343,8 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
                         ...tunnels.map((t) => {
                             const name = t.name ? ` (${t.name})` : "";
                             const pinned = t.pinned ? " [pinned]" : "";
-                            const url = t.publicUrl ?? t.url;
-                            return `  :${t.port}${name}${pinned} → ${url}`;
+                            const url = t.publicUrl ?? (t.browserUrl ? `${t.browserUrl} (requires browser login)` : "No shareable URL");
+                            return `  :${t.port}${name}${pinned} → ${url}${t.warning ? ` — ${t.warning}` : ""}`;
                         }),
                     ];
 
@@ -368,9 +375,10 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
             }
 
             const tunnels = (details?.tunnels as any[]) ?? [];
+            const warnings = tunnels.filter(t => t.warning).length;
             return new Text(
-                theme.fg("success", "✓") + " " +
-                theme.fg("muted", `${tunnels.length} tunnel(s)`),
+                theme.fg(warnings ? "warning" : "success", warnings ? "⚠" : "✓") + " " +
+                theme.fg("muted", `${tunnels.length} tunnel(s)${warnings ? ` — ${warnings} without shareable links` : ""}`),
                 0, 0,
             );
         },
@@ -403,9 +411,8 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
             }
 
             try {
-                // The tunnel service emits tunnel_removed on success (fire-and-forget).
-                // We listen for it briefly, but also accept that the operation may
-                // succeed silently if the port wasn't tracked.
+                // Older runners broadcast removal without requestId; accept that
+                // port-specific notification, but never treat silence as success.
                 const conn = deps.getRelaySocket();
                 if (!conn) {
                     return ok("Error: Not connected to relay.", { error: "Not connected" });
@@ -415,21 +422,27 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
                 const { socket } = conn;
 
                 // Set up a brief listener for the tunnel_removed response
-                const result = await new Promise<{ closed: boolean }>((resolve) => {
+                const result = await new Promise<{ closed: boolean }>((resolve, reject) => {
                     let settled = false;
 
                     const timer = setTimeout(() => {
                         if (settled) return;
                         settled = true;
                         socket.off("service_message" as any, handler);
-                        // If we time out, the unexpose likely succeeded anyway
-                        // (it's fire-and-forget on the daemon side for unknown ports).
-                        resolve({ closed: true });
+                        reject(new Error("Tunnel close timed out; closure is unconfirmed. Check list_tunnels before retrying."));
                     }, SERVICE_TIMEOUT_MS);
 
                     const handler = (envelope: { serviceId: string; type: string; requestId?: string; payload: unknown }) => {
                         if (envelope.serviceId !== "tunnel") return;
-                        // tunnel_removed doesn't echo requestId, match by port
+                        if (envelope.requestId && envelope.requestId !== requestId) return;
+                        if (envelope.type === "tunnel_error" && envelope.requestId === requestId) {
+                            if (settled) return;
+                            settled = true;
+                            clearTimeout(timer);
+                            socket.off("service_message" as any, handler);
+                            reject(new Error((envelope.payload as { error?: string })?.error ?? "Tunnel close failed"));
+                            return;
+                        }
                         if (envelope.type === "tunnel_removed") {
                             const removedPort = (envelope.payload as { port?: number })?.port;
                             if (removedPort === port) {
