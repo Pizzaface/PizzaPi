@@ -975,6 +975,7 @@ function createFakePi(): {
     const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>();
 
     const pi = {
+        registerTool: () => {},
         on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
             const list = handlers.get(event) ?? [];
             list.push(handler);

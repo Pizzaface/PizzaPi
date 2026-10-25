@@ -5,6 +5,8 @@
  * types so they can be unit-tested without booting a full agent session.
  */
 
+import type { MetaGoalWaiting } from "@pizzapi/protocol";
+
 export type GoalEvaluatorKind = "llm" | "keyword";
 
 export type GoalStatus = "active" | "met" | "failed" | "cancelled";
@@ -17,7 +19,7 @@ export type GoalStopReason =
     | "cancelled"
     | "evaluation_error";
 
-export type GoalVerdict = "met" | "not_met" | "uncertain";
+export type GoalVerdict = "met" | "not_met" | "waiting" | "uncertain";
 
 /**
  * The user-declared success condition for the session.
@@ -87,6 +89,9 @@ export interface GoalEvaluatorFeedback {
     /** Human-readable explanation for the verdict. */
     reason: string;
 
+    /** Expected external input when verdict is waiting. */
+    wakeOn?: string;
+
     /** Tokens consumed by the evaluator itself (for cost tracking). */
     tokensUsed?: number;
 
@@ -120,6 +125,12 @@ export interface GoalState {
 
     /** Current lifecycle status of the goal. */
     status: GoalStatus;
+
+    /** Active goal, but automatic continuation is suspended until new input. */
+    waiting?: MetaGoalWaiting;
+
+    /** Invalidates an in-flight evaluation after pause/resume or incoming input. */
+    controlVersion?: number;
 
     /**
      * Number of completed agent *runs* since the goal was set. One run may
@@ -213,6 +224,12 @@ export interface GoalCommandArgs {
 
     /** True when the user wants a status print instead of setting a goal. */
     statusOnly: boolean;
+
+    /** Resume the existing waiting goal without resetting its budget. */
+    resume?: boolean;
+
+    /** Pause automatic continuation until an explicit resume. */
+    pause?: boolean;
 }
 
 /**

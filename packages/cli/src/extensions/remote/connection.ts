@@ -593,7 +593,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 // This is also harmless while already idle. Suppress its interim
                 // settlement: auto-close or a parent must not complete the session
                 // before the command gets to run.
-                const abortForSlashCommand = isSlashCommand && effectiveDeliverAs === "steer";
+                // Goal pause/resume only changes continuation state and is safe
+                // during a run; it must not kill an in-flight tool to do so.
+                const isGoalControl = isSlashCommand && attachments.length === 0 && /^\/goal\s+(?:pause|resume)\s*$/.test(inputText.trimStart());
+                const abortForSlashCommand = isSlashCommand && !isGoalControl && effectiveDeliverAs === "steer";
                 if (abortForSlashCommand) rctx.pendingSteeringSlashCommands += 1;
                 try {
                     if (abortForSlashCommand) await rctx.sessionHost?.abort();

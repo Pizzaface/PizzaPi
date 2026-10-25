@@ -113,10 +113,14 @@ export function createFollowUpGrace(
      * cleared. Read fresh on each re-arm so a changed
      * PIZZAPI_SUSPEND_IDLE_MS takes effect without a restart.
      */
-    function startFollowUpGrace(ctx: { shutdown: () => void }, trySuspend?: () => Promise<boolean>): void {
+    function startFollowUpGrace(
+        ctx: { shutdown: () => void },
+        trySuspend?: () => Promise<boolean>,
+        logMessage = "session complete — waiting for parent ack/follow-up (no auto-shutdown)",
+    ): void {
         clearFollowUpGrace();
         state.followUpGraceShutdown = ctx.shutdown;
-        logger.info("pizzapi: session complete — waiting for parent ack/follow-up (no auto-shutdown)");
+        logger.info(`pizzapi: ${logMessage}`);
         if (!trySuspend) return;
         const shutdown = ctx.shutdown;
         const arm = () => {

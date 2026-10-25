@@ -29,7 +29,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { _setGlobalConfigDir } from "../../config/io.js";
 import { goalExtension } from "./index.js";
-import { getGoal, getPendingGuidance, resetSession } from "./state.js";
+import { getGoal, getPendingGuidance, resetSession, formatGoalStatus, toMetaGoalStatus } from "./state.js";
+import { parseLlmVerdict } from "./evaluator.js";
 import { isCacheReuseViable, resetSessionContext } from "./session-context.js";
 
 // ── Mock the network path for the LLM evaluator ──────────────────────────────
@@ -70,6 +71,7 @@ interface FakePi {
     entries: Array<{ customType: string; data: unknown }>;
     events: Map<string, unknown[]>;
     commands: Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>;
+    tools: Map<string, { execute: (...args: any[]) => Promise<any> }>;
 }
 
 function createFakePi(): FakePi {
@@ -80,7 +82,9 @@ function createFakePi(): FakePi {
     const events = new Map<string, unknown[]>();
     const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>();
 
+    const tools: FakePi["tools"] = new Map();
     const pi = {
+        registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<any> }) => tools.set(tool.name, tool),
         on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
             const list = handlers.get(event) ?? [];
             list.push(handler);
@@ -93,7 +97,7 @@ function createFakePi(): FakePi {
             userMessages.push({ content, options });
         },
         appendEntry: (customType: string, data?: unknown) => {
-            entries.push({ customType, data });
+            entries.push({ customType, data: structuredClone(data) });
         },
         registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionCommandContext) => unknown }) => {
             commands.set(name, options.handler);
@@ -113,7 +117,7 @@ function createFakePi(): FakePi {
         },
     } as unknown as ExtensionAPI;
 
-    return { pi, handlers, messages, userMessages, entries, events, commands };
+    return { pi, handlers, messages, userMessages, entries, events, commands, tools };
 }
 
 function createFakeCtx(overrides: {
@@ -251,6 +255,186 @@ describe("/goal multi-turn integration", () => {
 
     afterAll(() => {
         mock.restore();
+    });
+
+    test.each([1, 10])("explicit waiting suppresses continuation even with --min-turns %i, then wakes on delivered input", async (minTurns) => {
+        const { pi, handlers, commands, tools, userMessages } = createFakePi();
+        const ctx = createFakeCtx({ cwd: tmpCwd });
+        goalExtension(pi);
+        await commands.get("goal")!(`tests pass --evaluator keyword --keyword SUCCESS --min-turns ${minTurns}`, ctx as ExtensionCommandContext);
+        // Seed the persisted wait shape so this regression drives the original
+        // continuation path before the new tool exists.
+        Object.assign(getGoal("goal-integration-session")!, {
+            waiting: { reason: "CI is running", wakeOn: "CI completion trigger" },
+        });
+        await runTurnEnd(handlers, ctx, 1, "Waiting for CI");
+        await runTurnEnd(handlers, ctx, 2, "Still waiting for CI");
+        expect(userMessages).toHaveLength(1); // kickoff only, no goal nudges
+        expect(getGoal("goal-integration-session")?.evaluations).toHaveLength(0);
+        expect(tools.has("goal_wait")).toBe(true);
+
+        for (const handler of handlers.get("message_start") ?? []) {
+            await handler({ message: { role: "custom", customType: "trigger", content: "CI finished" } }, ctx);
+        }
+        expect(getGoal("goal-integration-session")?.waiting).toBeUndefined();
+        await runTurnEnd(handlers, ctx, 3, "More work remains");
+        expect(userMessages).toHaveLength(2); // useful work can continue again
+    });
+
+    test("goal_wait survives reload, ignores tool/status messages, and manual resume preserves the goal and budget", async () => {
+        const fake = createFakePi();
+        const ctx = createFakeCtx({ cwd: tmpCwd });
+        goalExtension(fake.pi);
+        const command = fake.commands.get("goal")!;
+        await command("CI succeeds --max-turns 8 --every 5", ctx as ExtensionCommandContext);
+        const state = getGoal("goal-integration-session")!;
+        state.lastEvaluatedTurn = 0; // within --every cadence
+        await fake.tools.get("goal_wait")!.execute("wait", { reason: "CI running", wakeOn: "CI trigger" }, undefined, undefined, ctx);
+        expect(formatGoalStatus(state)).toContain("Status: waiting");
+        expect(toMetaGoalStatus(state).waiting).toEqual({ reason: "CI running", wakeOn: "CI trigger" });
+        for (const message of [makeToolResult("wait registered"), { role: "custom", customType: "goal_status" }]) {
+            for (const handler of fake.handlers.get("message_start") ?? []) await handler({ message }, ctx);
+        }
+        await runTurnEnd(fake.handlers, ctx, 1, "Waiting");
+        expect(fake.userMessages).toHaveLength(1);
+        expect(fakeCompleteSimple).not.toHaveBeenCalled();
+        const saved = structuredClone(fake.entries).map((entry) => ({ ...entry, type: "custom" })) as SessionEntry[];
+        for (const handler of fake.handlers.get("session_shutdown") ?? []) await handler({}, ctx);
+        for (const handler of fake.handlers.get("session_start") ?? []) await handler({}, createFakeCtx({ entries: saved }));
+        expect(getGoal("goal-integration-session")?.waiting?.wakeOn).toBe("CI trigger");
+        expect(getGoal("goal-integration-session")?.turnCount).toBe(1);
+        await command("resume", ctx as ExtensionCommandContext);
+        expect(fake.userMessages).toHaveLength(2);
+        expect(getGoal("goal-integration-session")?.waiting).toBeUndefined();
+        expect(getGoal("goal-integration-session")?.id).toBe(state.id);
+        expect(getGoal("goal-integration-session")?.budget.maxTurns).toBe(8);
+        expect(getGoal("goal-integration-session")?.tokenSpend).toBe(15);
+        await command("resume", ctx as ExtensionCommandContext);
+        expect(fake.userMessages).toHaveLength(2); // no double resume
+        await command("clear", ctx as ExtensionCommandContext);
+        await expect(fake.tools.get("goal_wait")!.execute("wait", { reason: "x", wakeOn: "y" }, undefined, undefined, ctx)).rejects.toThrow("No active goal");
+    });
+
+    test("/goal pause is sticky across messages and goal_wait until explicit resume", async () => {
+        const fake = createFakePi();
+        const ctx = createFakeCtx({ cwd: tmpCwd });
+        goalExtension(fake.pi);
+        const command = fake.commands.get("goal")!;
+        await command("CI succeeds --max-turns 8", ctx as ExtensionCommandContext);
+        const id = getGoal("goal-integration-session")!.id;
+        await command("pause", ctx as ExtensionCommandContext);
+        expect(getGoal("goal-integration-session")?.waiting?.manual).toBe(true);
+        expect(formatGoalStatus(getGoal("goal-integration-session")!)).toContain("Status: paused");
+        for (const message of [{ role: "user", content: "Other request" }, { role: "custom", customType: "trigger", content: "Unrelated event" }]) {
+            for (const handler of fake.handlers.get("message_start") ?? []) await handler({ message }, ctx);
+        }
+        await fake.tools.get("goal_wait")!.execute("wait", { reason: "CI running", wakeOn: "CI result" }, undefined, undefined, ctx);
+        expect(getGoal("goal-integration-session")?.waiting?.manual).toBe(true);
+        await runTurnEnd(fake.handlers, ctx, 1, "Answered unrelated request");
+        expect(fake.userMessages).toHaveLength(1);
+        expect(fakeCompleteSimple).not.toHaveBeenCalled();
+        const saved = fake.entries.map((entry) => ({ ...entry, type: "custom" })) as SessionEntry[];
+        for (const handler of fake.handlers.get("session_start") ?? []) await handler({}, createFakeCtx({ entries: saved }));
+        expect(getGoal("goal-integration-session")?.waiting?.manual).toBe(true);
+        await command("resume", ctx as ExtensionCommandContext);
+        expect(getGoal("goal-integration-session")?.waiting).toBeUndefined();
+        expect(getGoal("goal-integration-session")?.id).toBe(id);
+        expect(getGoal("goal-integration-session")?.turnCount).toBe(1);
+        expect(fake.userMessages).toHaveLength(2);
+        await command("clear", ctx as ExtensionCommandContext);
+        await command("pause", ctx as ExtensionCommandContext);
+        expect(getGoal("goal-integration-session")?.status).toBe("cancelled");
+        expect(fake.userMessages).toHaveLength(2);
+    });
+
+    test("waiting still enforces budgets and rejects blank wait reasons", async () => {
+        const fake = createFakePi();
+        const ctx = createFakeCtx({ cwd: tmpCwd });
+        goalExtension(fake.pi);
+        await fake.commands.get("goal")!("CI succeeds --max-turns 1", ctx as ExtensionCommandContext);
+        await expect(fake.tools.get("goal_wait")!.execute("wait", { reason: " ", wakeOn: "CI" }, undefined, undefined, ctx)).rejects.toThrow("requires");
+        await fake.tools.get("goal_wait")!.execute("wait", { reason: "CI running", wakeOn: "CI trigger" }, undefined, undefined, ctx);
+        await runTurnEnd(fake.handlers, ctx, 1, "Waiting");
+        expect(getGoal("goal-integration-session")?.stopReason).toBe("max_turns");
+        expect(getGoal("goal-integration-session")?.waiting).toBeUndefined();
+        expect(fake.userMessages).toHaveLength(1);
+    });
+
+    test.each([false, true])("LLM waiting verdict pauses the loop (cached=%s) and user input wakes it", async (cached) => {
+        const fake = createFakePi();
+        const ctx = createFakeCtx({ cwd: tmpCwd });
+        goalExtension(fake.pi);
+        await fake.commands.get("goal")!("CI succeeds", ctx as ExtensionCommandContext);
+        if (cached) {
+            ctx.model = ctx.modelRegistry.getAll()[0];
+            for (const handler of fake.handlers.get("context") ?? []) {
+                await handler({ messages: [{ role: "user", content: "CI succeeds", timestamp: Date.now() }] }, ctx);
+            }
+        }
+        fakeCompleteSimple.mockImplementationOnce(async (_model, context) => {
+            expect(JSON.stringify(context.messages.at(-1))).toContain('waiting');
+            return { ...makeAssistantMessage(JSON.stringify({ verdict: "waiting", reason: "CI running", wakeOn: "CI trigger" })), usage: { ...makeAssistantMessage("").usage, cacheRead: 10 } };
+        });
+        await runTurnEnd(fake.handlers, ctx, 1, "Waiting for CI");
+        expect(getGoal("goal-integration-session")?.waiting).toEqual({ reason: "CI running", wakeOn: "CI trigger" });
+        expect(fake.userMessages).toHaveLength(1);
+        await runTurnEnd(fake.handlers, ctx, 2, "Waiting for CI");
+        expect(fakeCompleteSimple).toHaveBeenCalledTimes(1);
+        for (const handler of fake.handlers.get("message_start") ?? []) await handler({ message: { role: "user", content: "CI finished" } }, ctx);
+        expect(getGoal("goal-integration-session")?.waiting).toBeUndefined();
+        fakeCompleteSimple.mockImplementationOnce(async () => makeAssistantMessage('{"verdict":"yes","reason":"CI passed"}'));
+        await runTurnEnd(fake.handlers, ctx, 3, "CI passed");
+        expect(getGoal("goal-integration-session")?.status).toBe("met");
+        expect(fake.userMessages).toHaveLength(1);
+    });
+
+    test.each(["replace", "clear", "arrival", "pause", "pause-resume", "pause-budget"])("in-flight evaluator respects %s", async (action) => {
+        const fake = createFakePi();
+        const ctx = createFakeCtx({ cwd: tmpCwd });
+        goalExtension(fake.pi);
+        await fake.commands.get("goal")!(action === "pause-budget" ? "CI succeeds --max-cost 0.00015" : "CI succeeds", ctx as ExtensionCommandContext);
+        const started = Promise.withResolvers<void>();
+        const finished = Promise.withResolvers<void>();
+        fakeCompleteSimple.mockImplementationOnce(async () => {
+            started.resolve();
+            await finished.promise;
+            return makeAssistantMessage('{"verdict":"no","reason":"CI not finished"}');
+        });
+        const turn = runTurnEnd(fake.handlers, ctx, 1, "Waiting for CI");
+        await started.promise;
+        if (action === "arrival") ctx.hasPendingMessages = () => true;
+        else if (action === "pause-resume") {
+            await fake.commands.get("goal")!("pause", ctx as ExtensionCommandContext);
+            await fake.commands.get("goal")!("resume", ctx as ExtensionCommandContext);
+        } else await fake.commands.get("goal")!(action === "clear" ? "clear" : action === "pause" || action === "pause-budget" ? "pause" : "new objective", ctx as ExtensionCommandContext);
+        finished.resolve();
+        await turn;
+        expect(fake.userMessages).toHaveLength(action === "replace" || action === "pause-resume" ? 2 : 1);
+        if (action !== "arrival") expect(getGoal("goal-integration-session")?.evaluations).toHaveLength(0);
+        if (action === "pause") expect(getGoal("goal-integration-session")?.waiting?.manual).toBe(true);
+        expect(fake.entries.filter((entry) => entry.customType === "goal_evaluator_usage")).toHaveLength(1);
+        if (action === "pause" || action === "pause-resume") {
+            expect(getGoal("goal-integration-session")?.tokenSpend).toBe(30);
+            expect(getGoal("goal-integration-session")?.costSpend).toBeCloseTo(0.0002);
+        }
+        if (action === "replace") expect(getGoal("goal-integration-session")?.tokenSpend).toBe(0);
+        if (action === "pause-budget") {
+            expect(getGoal("goal-integration-session")?.stopReason).toBe("max_cost");
+            expect(getGoal("goal-integration-session")?.costSpend).toBeCloseTo(0.0002);
+        }
+        if (action === "arrival") {
+            ctx.hasPendingMessages = () => false;
+            await runTurnEnd(fake.handlers, ctx, 2, "More work remains");
+            expect(fake.userMessages).toHaveLength(2);
+        }
+    });
+
+    test("malformed waiting decisions never fall through to a keep-going verdict", () => {
+        for (const verdict of [
+            { verdict: "waiting", reason: "not met" },
+            { verdict: "waiting", reason: "not met", wakeOn: " " },
+            { verdict: "waiting", reason: "", wakeOn: "CI result" },
+        ]) expect(parseLlmVerdict(JSON.stringify(verdict)).verdict).toBe("uncertain");
     });
 
     test("keyword evaluator loop: unmet → guidance → agent acts → goal cleared", async () => {

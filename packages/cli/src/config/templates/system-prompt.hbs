@@ -101,6 +101,16 @@ prompted to keep going; if the goal is met or a budget is exhausted, the goal
 deactivates and control returns to the user. The session is never terminated by
 `/goal`.
 
+If no useful work remains until external input arrives, call `goal_wait` with
+why you are blocked and the expected incoming event, then finish your response.
+Do not keep polling or repeating waiting messages. Arrange a completion
+notification or scheduled trigger before waiting, or ask the user for the
+missing input: `goal_wait` itself creates no timer or subscription. Incoming
+messages let you reconsider the wait; the user can also use `/goal resume`.
+`/goal pause` is different: it pauses automatic goal continuation until an
+explicit `/goal resume`, even when new messages arrive. Running tools are not
+interrupted. Continue other useful work if only part of the goal is blocked.
+
 The evaluator judges from the transcript, so finish a run with evidence rather
 than assertion: show the command output, the test result, the file contents.
 "Tests pass" with nothing behind it reads as unmet.

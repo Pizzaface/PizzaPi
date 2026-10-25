@@ -57,7 +57,7 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
 
     const pi: any = {
         on: (name: string, fn: any) => handlers.set(name, fn),
-        events: { on: () => {} },
+        events: { on: (name: string, fn: any) => handlers.set(`events:${name}`, fn) },
         registerTool: () => {},
         registerCommand: () => {},
     };
@@ -176,6 +176,197 @@ describe("agent_end — session_error / session_complete ordering", () => {
         // session_complete is chained after the session_error publish resolves,
         // so the engine receives them in this order.
         expect(emitted).toEqual(["lifecycle:session_error", "lifecycle:session_complete"]);
+    });
+
+    describe("waiting goal", () => {
+        const waitingGoal = (manual = false) => ({
+            id: "goal-wait", description: "CI passes", status: "active" as const, turnCount: 1,
+            tokenSpend: 15, costSpend: 0,
+            waiting: { reason: "CI running", wakeOn: "CI result", ...(manual ? { manual: true } : {}) },
+        });
+
+        /** Ack-capable socket; records session_message payloads and answers relay probes. */
+        function withRelay(rctx: any, sessionMessageAck: any = { ok: true, delivered: ["parent-session-1"] }) {
+            const notices: any[] = [];
+            const suspendRequests: any[] = [];
+            rctx.relaySessionId = "child-session-1";
+            rctx.isAgentActive = false;
+            rctx.sioSocket.emit = (event: string, payload: any, ack?: (r: any) => void) => {
+                if (event === "session_message") { notices.push(payload); ack?.(sessionMessageAck); }
+                else if (event === "get_linked_child_count") ack?.({ ok: true, count: 0 });
+                else if (event === "session_suspend") { suspendRequests.push(payload); ack?.({ ok: true }); }
+            };
+            return { notices, suspendRequests };
+        }
+
+        const RETRY_DELAYS = new Set([3_000, 6_000, 12_000, 24_000, 48_000, 60_000]);
+        /** Capture the idle-suspend and notice-retry timers instead of waiting on real clocks. */
+        async function withSuspendTimers(fn: (fireSuspend: () => Promise<void>, fireRetry: () => Promise<void>, pendingRetries: () => number) => Promise<void>) {
+            const realSetTimeout = globalThis.setTimeout;
+            const realClearTimeout = globalThis.clearTimeout;
+            const suspendTimers: Array<() => void> = [];
+            const retryTimers = new Map<number, () => void>();
+            let nextId = 1_000_000;
+            const prevEnv = process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH;
+            process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH = "/tmp/usage-cache";
+            (globalThis as any).setTimeout = ((cb: () => void, ms?: number, ...rest: any[]) => {
+                if (ms === 30 * 60_000) { suspendTimers.push(cb); return 0 as any; }
+                if (ms !== undefined && RETRY_DELAYS.has(ms)) { const id = nextId++; retryTimers.set(id, cb); return id as any; }
+                return realSetTimeout(cb, ms, ...rest);
+            }) as any;
+            (globalThis as any).clearTimeout = ((id: any) => {
+                if (typeof id === "number" && retryTimers.delete(id)) return;
+                realClearTimeout(id);
+            }) as any;
+            const drain = async (cbs: Array<() => void>) => {
+                cbs.forEach((cb) => cb());
+                for (let i = 0; i < 5; i++) await flush();
+            };
+            try {
+                await fn(
+                    () => drain(suspendTimers.splice(0)),
+                    () => { const cbs = [...retryTimers.values()]; retryTimers.clear(); return drain(cbs); },
+                    () => retryTimers.size,
+                );
+            } finally {
+                globalThis.setTimeout = realSetTimeout;
+                globalThis.clearTimeout = realClearTimeout;
+                if (prevEnv === undefined) delete process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH;
+                else process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH = prevEnv;
+            }
+        }
+
+        test("notifies the parent once per waiting state instead of reporting completion", async () => {
+            const { agentEnd, agentSettled, emitted, rctx } = setup(null);
+            const { notices } = withRelay(rctx);
+            const shutdown = mock(() => {});
+            const ctx = { ...agentEndCtx, shutdown };
+            rctx.goalState = waitingGoal();
+            agentEnd({ messages: [{ role: "assistant", content: [{ type: "text", text: "CI kicked off" }] }] }, ctx);
+            agentSettled({}, ctx);
+            await flush();
+            expect(emitted).toEqual([]);
+            expect(shutdown).not.toHaveBeenCalled();
+            expect(notices).toHaveLength(1);
+            expect(notices[0]).toMatchObject({ target: "parent", deliverAs: "input" });
+            expect(notices[0].message).toContain("NOT complete");
+            expect(notices[0].message).toContain("Reason: CI running");
+            expect(notices[0].message).toContain("Wakes on: CI result");
+            expect(notices[0].message).toContain("CI kicked off");
+
+            agentEnd({ messages: [] }, ctx);
+            agentSettled({}, ctx);
+            await flush();
+            expect(notices).toHaveLength(1); // same waiting state: deduped
+
+            rctx.goalState = waitingGoal(true);
+            agentEnd({ messages: [] }, ctx);
+            agentSettled({}, ctx);
+            await flush();
+            expect(notices).toHaveLength(2);
+            expect(notices[1].message).toContain("paused");
+
+            rctx.goalState = null;
+            agentEnd({ messages: [] }, ctx);
+            agentSettled({}, ctx);
+            await flush();
+            expect(emitted).toEqual(["lifecycle:session_complete"]);
+        });
+
+        test("still reports session_error while waiting", async () => {
+            const { agentEnd, agentSettled, emitted, rctx } = setup({ errorMessage: "429 rate limit", detectedAt: Date.now() });
+            const { notices } = withRelay(rctx);
+            rctx.goalState = waitingGoal();
+            agentEnd({ messages: [] }, agentEndCtx);
+            agentSettled({}, agentEndCtx);
+            await flush();
+            expect(emitted).toEqual(["lifecycle:session_error"]);
+            expect(notices).toHaveLength(1);
+        });
+
+        test("failed notice → visible → retried after reconnect → ack, and only then suspendable", async () => {
+            await withSuspendTimers(async (fireSuspend, fireRetry) => {
+                const { agentEnd, agentSettled, rctx } = setup(null);
+                const { notices, suspendRequests } = withRelay(rctx);
+                const notify = mock(() => {});
+                const shutdown = mock(() => {});
+                const ctx = { ...agentEndCtx, shutdown, ui: { notify } };
+                rctx.goalState = waitingGoal();
+                (rctx.sioSocket as any).connected = false; // relay dropped
+                agentEnd({ messages: [] }, ctx);
+                agentSettled({}, ctx);
+                await flush();
+                expect(notices).toHaveLength(0);
+                expect(notify).toHaveBeenCalledTimes(1);
+                expect(String((notify.mock.calls[0] as any[])[0])).toContain("Not connected to relay");
+                await fireSuspend();
+                expect(suspendRequests).toHaveLength(0); // no ack → no suspend
+
+                (rctx.sioSocket as any).connected = true; // reconnected
+                await fireRetry();
+                expect(notices).toHaveLength(1);
+                expect(notify).toHaveBeenCalledTimes(1); // retries don't re-toast
+                await fireSuspend();
+                expect(suspendRequests).toHaveLength(1);
+                expect(shutdown).toHaveBeenCalledTimes(1);
+            });
+        });
+
+        test("stale notice retries are cancelled by a new run or a goal change", async () => {
+            await withSuspendTimers(async (_fireSuspend, fireRetry, pendingRetries) => {
+                const { agentEnd, agentSettled, rctx, handlers } = setup(null);
+                const { notices } = withRelay(rctx, { ok: false, error: "parent offline" });
+                const ctx = { ...agentEndCtx, ui: { notify: () => {} } };
+                rctx.goalState = waitingGoal();
+                agentEnd({ messages: [] }, ctx);
+                agentSettled({}, ctx);
+                await flush();
+                expect(notices).toHaveLength(1);
+                expect(pendingRetries()).toBe(1);
+                handlers.get("turn_start")!({ type: "turn_start" }, ctx); // woken by input
+                expect(pendingRetries()).toBe(0);
+                await fireRetry();
+                expect(notices).toHaveLength(1);
+
+                agentEnd({ messages: [] }, ctx);
+                agentSettled({}, ctx);
+                await flush();
+                expect(notices).toHaveLength(2);
+                expect(pendingRetries()).toBe(1);
+                handlers.get("events:goal:state_changed")!({ ...waitingGoal(), waiting: undefined }, {}); // /goal resume
+                expect(pendingRetries()).toBe(0);
+                await fireRetry();
+                expect(notices).toHaveLength(2);
+            });
+        });
+
+        test("an acked waiting child suspends; a new turn before the timer blocks it", async () => {
+            await withSuspendTimers(async (fireSuspend) => {
+                const { agentEnd, agentSettled, rctx, handlers } = setup(null);
+                const { suspendRequests } = withRelay(rctx);
+                const shutdown = mock(() => {});
+                const ctx = { ...agentEndCtx, shutdown };
+                rctx.goalState = waitingGoal();
+
+                agentEnd({ messages: [] }, ctx);
+                agentSettled({}, ctx);
+                await flush();
+                // Woken by an incoming message: the notice ack no longer covers this generation.
+                handlers.get("turn_start")!({ type: "turn_start" }, ctx);
+                await fireSuspend();
+                expect(suspendRequests).toHaveLength(0);
+                expect(shutdown).not.toHaveBeenCalled();
+
+                // Waits again (same state: no duplicate notice) and is now suspendable.
+                agentEnd({ messages: [] }, ctx);
+                agentSettled({}, ctx);
+                await flush();
+                await fireSuspend();
+                expect(suspendRequests).toHaveLength(1);
+                expect(shutdown).toHaveBeenCalledTimes(1);
+                expect((rctx as any).suspending).toBe(true);
+            });
+        });
     });
 
     test("emits only session_complete when there is no usage-limit error", async () => {

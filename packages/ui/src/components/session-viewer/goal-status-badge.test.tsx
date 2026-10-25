@@ -67,6 +67,39 @@ describe("GoalStatusBadge", () => {
     expect(getByText(/still failing/)).toBeDefined();
   });
 
+  test("labels a waiting goal with its reason and wake event", () => {
+    const { getByText, queryByText } = renderWithTooltip(
+      <GoalStatusBadge
+        goal={{
+          id: "goal_1",
+          description: "ship PR",
+          status: "active",
+          turnCount: 2,
+          tokenSpend: 0,
+          costSpend: 0,
+          lastReason: "old evaluator reason",
+          waiting: { reason: "CI running", wakeOn: "github:check_suite" },
+        }}
+      />,
+    );
+
+    expect(getByText("/goal waiting")).toBeDefined();
+    expect(queryByText("/goal active")).toBeNull();
+    expect(getByText(/wakes on github:check_suite/)).toBeDefined();
+    expect(getByText(/CI running/)).toBeDefined();
+    expect(queryByText(/old evaluator reason/)).toBeNull();
+  });
+
+  test("labels a manual pause with explicit resume instructions", () => {
+    const { getByText, queryByText } = renderWithTooltip(
+      <GoalStatusBadge goal={{ id: "goal_1", description: "ship PR", status: "active", turnCount: 2, tokenSpend: 0, costSpend: 0,
+        waiting: { reason: "Paused by user.", wakeOn: "/goal resume", manual: true } }} />,
+    );
+    expect(getByText("/goal paused")).toBeDefined();
+    expect(getByText(/resume to continue/)).toBeDefined();
+    expect(queryByText("/goal waiting")).toBeNull();
+  });
+
   test("hides when there is no active goal", () => {
     const { container } = renderWithTooltip(
       <GoalStatusBadge goal={null} />,

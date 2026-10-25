@@ -178,6 +178,26 @@ describe("normalizeSessionMetaState", () => {
     expect(result.goal?.status).toBe("active");
   });
 
+  test("preserves valid goal waiting and drops malformed waiting", () => {
+    const base = { id: "g1", description: "G", status: "active", turnCount: 1, tokenSpend: 0, costSpend: 0 };
+    const ok = normalizeSessionMetaState({ version: 1, goal: { ...base, waiting: { reason: "CI", wakeOn: "github:check_suite" } } });
+    expect(ok?.goal?.status).toBe("active");
+    expect(ok?.goal?.waiting).toEqual({ reason: "CI", wakeOn: "github:check_suite" });
+    const paused = normalizeSessionMetaState({ version: 1, goal: { ...base, waiting: { reason: "Paused", wakeOn: "/goal resume", manual: true } } });
+    expect(paused?.goal?.waiting?.manual).toBe(true);
+    const invalidManual = normalizeSessionMetaState({ version: 1, goal: { ...base, waiting: { reason: "CI", wakeOn: "result", manual: "true" } } });
+    expect(invalidManual?.goal?.waiting?.manual).toBeUndefined();
+
+    for (const waiting of ["CI", { reason: "CI" }, { reason: "", wakeOn: "x" }, { reason: "CI", wakeOn: 5 }]) {
+      const result = normalizeSessionMetaState({ version: 1, goal: { ...base, waiting } });
+      expect(result?.goal?.id).toBe("g1");
+      expect(result?.goal?.waiting).toBeUndefined();
+    }
+
+    const ev = parseMetaRelayEvent({ type: "goal_updated", goal: { ...base, waiting: { reason: "CI", wakeOn: "e" } } });
+    expect((ev as any)?.goal?.waiting).toEqual({ reason: "CI", wakeOn: "e" });
+  });
+
   test("replaces invalid fields with safe defaults instead of crashing", () => {
     const state = {
       version: 1,

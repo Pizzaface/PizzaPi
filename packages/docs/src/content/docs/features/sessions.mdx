@@ -169,7 +169,9 @@ When switching between branches, you'll be asked whether to **summarize** the br
 
 ## Forking with `/fork`
 
-While `/tree` branches within the same session file, `/fork` creates an **entirely new session** from any previous user message in the current one.
+While `/tree` branches within the same session file, `/fork` creates a **new session file** from any previous user message in the current one.
+
+PizzaPi's `/rewind` uses this fork operation. It keeps the current relay session identity, parent and child links, trigger subscriptions, and trigger history. Children that started after the rewind point remain linked and running: rewinding the conversation does not undo external work. `/new` and `/resume` still clear the previous conversation's links and subscriptions.
 
 | Feature | `/tree` | `/fork` |
 |---------|---------|---------|

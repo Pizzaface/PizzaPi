@@ -25,6 +25,9 @@ import type {
 
 export const DEFAULT_EVALUATOR_MAX_TOKENS = 512;
 
+const WAITING_INSTRUCTIONS = 'If the goal is unmet and no useful work can proceed until external input arrives (a child result, background job completion, CI trigger, or user answer), return "waiting" with a concrete reason and "wakeOn" naming that expected input. Do not return "no" just to repeat a status check or waiting message. Background work alone is not a reason to wait if other useful work remains. Waiting does not schedule a timer or subscribe to events; if no notification is arranged, name the user input needed to resume.';
+const VERDICT_FORMAT = '{"verdict": "yes" or "no" or "waiting", "reason": "short evidence-based explanation", "wakeOn": "expected external input (required only for waiting)"}';
+
 /**
  * Default cadence (in completed agent runs) for the LLM evaluator when
  * neither `/goal --every` nor `config.goal.evaluateEveryNTurns` is set.
@@ -58,7 +61,8 @@ function buildEvaluatorPrompt(state: GoalState, context: GoalEvaluationContext):
         "Latest turn:",
         context.latestTurnText || "(no turn text available)",
         "",
-        'Has the goal been met? Reply with a single JSON object using this exact format:\n{"verdict": "yes" or "no", "reason": "short explanation of why the goal is or is not satisfied"}',
+        WAITING_INSTRUCTIONS,
+        `Has the goal been met? Reply with a single JSON object using this exact format:\n${VERDICT_FORMAT}`,
     ].join("\n");
 }
 
@@ -79,7 +83,7 @@ function isNoVerdict(value: string): boolean {
  *
  * Accepts "yes" / "no", "met" / "not_met" / "not met" as synonyms.
  */
-export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: string } {
+export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: string; wakeOn?: string } {
     const text = raw.trim();
     const lower = text.toLowerCase();
 
@@ -91,6 +95,13 @@ export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: st
             const parsed = JSON.parse(candidate);
             if (parsed && typeof parsed === "object" && typeof parsed.verdict === "string") {
                 const verdict = parsed.verdict.toLowerCase().trim();
+                if (verdict === "waiting") {
+                    const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : "";
+                    const wakeOn = typeof parsed.wakeOn === "string" ? parsed.wakeOn.trim() : "";
+                    return reason && wakeOn
+                        ? { verdict: "waiting", reason, wakeOn }
+                        : { verdict: "uncertain", reason: "Waiting verdict requires a reason and an expected wake-up event." };
+                }
                 if (isYesVerdict(verdict) || isNoVerdict(verdict)) {
                     const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : "";
                     return {
@@ -216,7 +227,8 @@ function buildAppendedEvaluatorPrompt(state: GoalState, context: GoalEvaluationC
         "",
         "Judge only on evidence in the conversation above. A claim that the work is done is not evidence — look for tool output that demonstrates it (command exit status, test results, file contents, build logs). If there are only claims, the verdict is \"no\".",
         "",
-        'Reply with a single JSON object and nothing else, using this exact format:\n{"verdict": "yes" or "no", "reason": "short explanation of why the goal is or is not satisfied"}',
+        WAITING_INSTRUCTIONS,
+        `Reply with a single JSON object and nothing else, using this exact format:\n${VERDICT_FORMAT}`,
     ].join("\n");
 }
 
@@ -272,6 +284,7 @@ export function createSessionCacheEvaluator(deps: SessionCacheEvaluatorDeps): Go
                     reason: parsed.reason,
                     tokensUsed: response.usage?.totalTokens,
                     cost: response.usage?.cost?.total,
+                    wakeOn: parsed.wakeOn,
                     cacheReadTokens: response.usage?.cacheRead,
                     model: { provider: deps.model.provider, id: deps.model.id },
                     timestamp: Date.now(),
@@ -323,6 +336,7 @@ export function createLlmGoalEvaluator(deps: LlmEvaluatorDeps): GoalEvaluator {
                     reason: parsed.reason,
                     tokensUsed: response.usage?.totalTokens,
                     cost: response.usage?.cost?.total,
+                    wakeOn: parsed.wakeOn,
                     model: { provider: deps.model.provider, id: deps.model.id },
                     timestamp: Date.now(),
                 };
