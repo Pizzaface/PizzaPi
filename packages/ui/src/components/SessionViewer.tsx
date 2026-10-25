@@ -71,7 +71,10 @@ import {
   Zap,
   Pencil,
   BarChart3,
+  AudioLines,
 } from "lucide-react";
+import { LiveOverlay } from "@/components/session-viewer/LiveOverlay";
+import { requestMicrophone } from "@/lib/live-voice/audio";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
 import { PluginCommandContext, PluginResultCountContext, type PluginCommandHandler } from "@/components/plugins/plugins-data";
@@ -178,6 +181,7 @@ export function SessionViewer({
   goal,
   planModeEnabled,
   runnerId,
+  livePort,
   sessionCwd,
   onAppendSystemMessage,
   onSpawnAgentSession,
@@ -210,6 +214,21 @@ export function SessionViewer({
 
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
+  // Non-null while the Live voice overlay is open; the context is unlocked by the Live tap.
+  const [liveAudioContext, setLiveAudioContext] = React.useState<AudioContext | null>(null);
+  const [liveMicStream, setLiveMicStream] = React.useState<Promise<MediaStream> | null>(null);
+  const closeLive = React.useCallback(() => {
+    setLiveAudioContext(null);
+    setLiveMicStream(null);
+  }, []);
+  // Live is per session and per runner service: switching sessions, or the
+  // runner's live service going away, ends the call. (The overlay's teardown
+  // closes the AudioContext and mic, so a remount on the same state would be dead.)
+  const liveAvailable = livePort != null;
+  React.useEffect(() => () => {
+    setLiveAudioContext(null);
+    setLiveMicStream(null);
+  }, [sessionId, liveAvailable]);
   // True when the session has been stuck hydrating ("Connecting…"/"Loading
   // session…") long enough that the disabled composer needs an explanation.
   const [hydrationStuck, setHydrationStuck] = React.useState(false);
@@ -2007,12 +2026,52 @@ export function SessionViewer({
                       onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "compact" });
                     } : undefined}
                   />
+                  {sessionId && livePort != null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Acquire the mic inside the tap; mobile browsers may reject a
+                        // permission request made later by the model-loading effect.
+                        const ctx = new AudioContext();
+                        void ctx.resume();
+                        const stream = requestMicrophone().then((s) => {
+                          for (const track of s.getAudioTracks()) track.enabled = false;
+                          return s;
+                        });
+                        void stream.catch(() => {}); // the overlay observes and displays the rejection
+                        setLiveMicStream(stream);
+                        setLiveAudioContext(ctx);
+                      }}
+                      disabled={!composerReady}
+                      className="inline-flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:opacity-40"
+                      title="Start a live voice chat"
+                      aria-label="Start a live voice chat"
+                    >
+                      <AudioLines className="size-4" />
+                    </button>
+                  )}
                   <ComposerAttachmentButton disabled={!composerReady} />
                   <ComposerSubmitButton sessionId={sessionId} input={input} agentActive={agentActive} onExec={onExec} isTouchDevice={isTouchDevice} />
                 </div>
               </PromptInputFooter>
             </PromptInput>
           </div>
+
+          {liveAudioContext && liveMicStream && sessionId && livePort != null && (
+            <LiveOverlay
+              audioContext={liveAudioContext}
+              micStream={liveMicStream}
+              sessionId={sessionId}
+              sessionName={sessionName ?? undefined}
+              runnerId={runnerId}
+              port={livePort}
+              messages={messages}
+              activeToolCalls={activeToolCalls}
+              agentActive={!!agentActive}
+              send={(text, steer) => onSendInput?.({ text, files: [], deliverAs: steer ? "steer" : "followUp" }) ?? false}
+              onClose={closeLive}
+            />
+          )}
 
           {/* ── Dialogs ───────────────────────────────────────────────────── */}
           <Dialog open={showIncompleteTriggerDialog} onOpenChange={setShowIncompleteTriggerDialog}>

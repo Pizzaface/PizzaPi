@@ -159,6 +159,8 @@ export interface SessionViewerProps {
   planModeEnabled?: boolean;
   /** Runner ID for the current session (used for runner files API) */
   runnerId?: string;
+  /** Port of the runner's `live` voice service; shows the Live button when set. */
+  livePort?: number;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
   sessionCwd?: string;
   /** Append a local system message to the conversation (string or structured data for card rendering) */

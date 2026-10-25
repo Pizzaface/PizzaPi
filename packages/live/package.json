@@ -1,0 +1,31 @@
+{
+  "name": "@pizzapi/live",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Live voice mode for PizzaPi: local streaming Moonshine STT + Kokoro TTS on the runner",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1",
+    "@moonshine-ai/moonshine-wasm": "0.1.5",
+    "kokoro-js": "^1.2.1"
+  },
+  "pi": {
+    "extensions": ["./extension.ts"],
+    "pizzapi": {
+      "schemaVersion": 1,
+      "services": [
+        {
+          "id": "live",
+          "label": "Live",
+          "icon": "audio-lines",
+          "entry": "./service/index.ts",
+          "panel": { "dir": "./service/panel" }
+        }
+      ]
+    }
+  }
+}

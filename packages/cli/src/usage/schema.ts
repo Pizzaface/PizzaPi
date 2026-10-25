@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export function getUsageDbPath(): string {
   return join(homedir(), ".pizzapi", "usage.db");
@@ -128,6 +128,18 @@ export function openUsageDb(dbPath: string = getUsageDbPath()): Database {
         // Track file identity so a rewritten (replaced-inode) session file
         // triggers a rebuild of that file's accounting.
         db.run("ALTER TABLE processing_state ADD COLUMN ino INTEGER");
+      }
+
+      if (currentVersion < 3) {
+        // v3: OpenRouter router models price at "-1" (variable). Pre-#875 that
+        // was persisted as -$1/token; null out those bogus costs and re-derive
+        // session totals from the cleaned events.
+        db.run(`UPDATE sessions SET total_cost =
+          (SELECT SUM(CASE WHEN cost_usd >= 0 THEN cost_usd END) FROM usage_events u WHERE u.session_id = sessions.id)
+          WHERE id IN (SELECT session_id FROM usage_events WHERE cost_usd < 0)`);
+        for (const col of ["cost_usd", "cost_input", "cost_output", "cost_cache_read", "cost_cache_write"]) {
+          db.run(`UPDATE usage_events SET ${col} = NULL WHERE ${col} < 0`);
+        }
       }
 
       db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);

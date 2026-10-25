@@ -1,0 +1,59 @@
+---
+title: Live Voice
+description: Talk to a session's agent by voice, with local open-source speech-to-text and text-to-speech running on your runner.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Live opens a full-screen voice chat with the agent in the current session. You talk, the agent works with its normal tools and context, and its reply is read back to you. It's built for phones but works anywhere with a microphone.
+
+Speech runs locally on the runner with open-source models. Nothing leaves your machines except the usual model calls the agent already makes.
+
+| Part | Model | Where it runs |
+|------|-------|---------------|
+| Speech-to-text | [Moonshine Small Streaming](https://github.com/moonshine-ai/moonshine) (MIT), via the official `@moonshine-ai/moonshine-wasm` runtime | Runner (in a child process) |
+| Text-to-speech | [Kokoro 82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) (Apache-2.0) | Runner |
+| Voice detection | Silero v6 speech detector with the browser's echo cancellation | Browser |
+
+## Install
+
+Live ships as the `@pizzapi/live` package in `packages/live`. It runs a daemon service, so it needs the daemon-service grant.
+
+<Steps>
+1. Install dependencies and the package:
+
+   ```bash
+   cd packages/live && bun install
+   pizza install ./packages/live --allow-daemon-services
+   ```
+
+2. Restart the runner.
+
+3. Open the **Live** panel once to download the models (about 500 MB, cached in `~/.pizzapi/live/models`). If you skip this step, the first voice chat downloads them instead. The speech-to-text files come from `download.moonshine.ai` and are checked against the size and CRC32C in the runtime's own manifest; a partial or corrupt file is downloaded again. No Python or other system package is needed.
+</Steps>
+
+## Use it
+
+Tap the waveform button next to the attachment button in the composer. The button only appears when the session's runner has the `live` service.
+
+- **Talk** whenever the orb says *Listening*. Your words appear in italics while you speak and may change as recognition revises them. About a second without detected speech ends your turn, and only the final text is sent.
+- **Interrupt** by talking over the agent. After roughly 160 ms of speech-positive audio the agent's voice drops to a low volume (it pauses outright if it was already quiet) until the transcript is in. Short false starts, non-speech sounds and the agent's own echo restore it; recognized speech stops it, and steers the agent if it is still working.
+- **Mute** stops the microphone. **End** (the red button or <kbd>Esc</kbd>) closes the chat.
+
+What you say is sent to the session as a normal message, so it appears in the transcript. Reply sentences are spoken as they stream in. Extra silence at the edges of synthesized clips is shortened, retaining 80 ms on each edge so sentence boundaries do not accumulate long pauses. Code blocks, tables and links stay on screen and are not read aloud.
+
+While Live is open, the session's agent is told that it's in a spoken conversation: keep replies short, lead with the answer, and summarize instead of reading code or output. The hint is removed when the chat ends, or two minutes after the last heartbeat if the browser disappears.
+
+<Aside type="note">
+The bundled iOS and Android apps request microphone permission the first time you start Live.
+</Aside>
+
+## Limits
+
+- The speech detector and its WASM runtime load from your PizzaPi UI server (about 13 MB on first use), not a third-party CDN. Live shows *Loading speech detector…* until it is ready; a load failure is shown rather than silently falling back to volume-only detection.
+- Speech detection is probabilistic, not a guarantee that every cough or throat-clear is rejected. Speakerphone echo and background speech can still trigger it. Use a headset or mute when needed.
+- Audio streams to the runner over the tunnel WebSocket while you talk. On an Apple M2 Pro the final text arrived about 0.1–0.2 s after the end of a turn in local tests, and slower under load. Add the model's first-token time before the first spoken sentence.
+- The speech-to-text model runs in one child process per runner and uses about 1.1 GB of memory while loaded. The process exits after 10 minutes with no Live chat open, which returns the memory, and the next chat reloads it in a few seconds.
+- If the speech connection drops mid-turn, that turn is dropped, not replayed, and Live reconnects. Say it again.
+- Recognition accuracy depends on your voice, microphone and room. Local tests used synthetic voices and a few recorded coughs; they don't predict how it does with your speech.
+- Text-to-speech runs on the runner's CPU at roughly 0.4× real time on Apple silicon. Slower machines start speaking later.

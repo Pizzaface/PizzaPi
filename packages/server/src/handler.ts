@@ -206,12 +206,12 @@ export function withSecurityHeaders(res: Response): Response {
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("X-XSS-Protection", "0");
     headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-    // Hardened default — but a tunneled service may declare its own
-    // Permissions-Policy (e.g. the daily report needs `microphone=self` for
-    // voice feedback). Origin-provided policy wins; the restrictive default
-    // still covers the relay's own surfaces and every origin that stays silent.
+    // A tunneled service may declare its own Permissions-Policy. The app itself
+    // needs first-party mic access for Live voice, but `self` only: service
+    // panels already carry allow="microphone", so `*` would hand the mic to
+    // every third-party panel iframe. Origin-provided policy wins.
     if (!headers.has("Permissions-Policy")) {
-        headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+        headers.set("Permissions-Policy", "camera=(), microphone=self, geolocation=()");
     }
 
     if (isTunnel) {
@@ -245,16 +245,18 @@ export function withSecurityHeaders(res: Response): Response {
         headers.set("X-Frame-Options", "DENY");
         // When host-based tunnels are configured, the UI iframes the tunnel
         // origin (<label>.<domain>) — allow it in frame-src.
+        // Live voice also fetches the runner's speech service on that origin
+        // directly, so it goes in connect-src too.
         const tunnelHost = getTunnelHostConfig();
-        const frameSrc = tunnelHost
-            ? `frame-src 'self' ${tunnelHost.scheme}://*.${tunnelHost.host}${tunnelHost.portSuffix}; `
-            : "";
+        const tunnelOrigin = tunnelHost ? `${tunnelHost.scheme}://*.${tunnelHost.host}${tunnelHost.portSuffix}` : "";
+        const frameSrc = tunnelHost ? `frame-src 'self' ${tunnelOrigin}; ` : "";
+        const connectSrc = tunnelHost ? ` ${tunnelOrigin}` : "";
         // The sha256 hash whitelists the inline FOUC-prevention <script> in
         // packages/ui/index.html.  If that script changes, regenerate the hash:
         //   python3 -c "import re,hashlib,base64;html=open('packages/ui/index.html').read();m=re.search(r'<script>(.*?)</script>',html,re.DOTALL);print('sha256-'+base64.b64encode(hashlib.sha256(m.group(1).encode()).digest()).decode())"
         headers.set(
             "Content-Security-Policy",
-            `${frameSrc}default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'`,
+            `${frameSrc}default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss: blob:${connectSrc}; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'`,
         );
     }
 

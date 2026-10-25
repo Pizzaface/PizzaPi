@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
-import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
+import type { RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
@@ -135,8 +135,8 @@ import {
 import { createLogger } from "@pizzapi/tools";
 import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession, shouldAcceptDisconnected } from "@/lib/viewer-switch";
 
-// Lazy-loaded low-frequency surfaces. Auth, session sidebar/viewer, banners,
-// and loading/error UI remain eager so critical paths stay fast.
+// Keep the app shell eager; load the transcript and secondary surfaces separately.
+const LazySessionViewer = React.lazy(() => import("@/components/SessionViewer").then((m) => ({ default: m.SessionViewer })));
 const LazyUserPreferencesPanel = React.lazy(() => import("@/components/UserPreferencesPanel").then((m) => ({ default: m.UserPreferencesPanel })));
 const LazyApiKeyManager = React.lazy(() => import("@/components/ApiKeyManager").then((m) => ({ default: m.ApiKeyManager })));
 const LazyRunnerTokenManager = React.lazy(() => import("@/components/RunnerTokenManager").then((m) => ({ default: m.RunnerTokenManager })));
@@ -1315,8 +1315,14 @@ export function App() {
           let keyMap: Map<string, number> | null = null;
 
           for (const { raw: pendingRaw, key } of pending.values()) {
-            let msg = toRelayMessage(pendingRaw, key);
-            if (!msg) continue;
+            // `key` is already the computed message key. Re-deriving it with
+            // `key` as the fallback double-prefixes fallback keys
+            // ("assistant:fallback:assistant:fallback:…"), so message_end's
+            // evictPartial (which looks for `key`) never finds the partial and
+            // the streamed reply stays in `messages` twice.
+            const base = toRelayMessage(pendingRaw, key);
+            if (!base) continue;
+            let msg = base.key === key ? base : { ...base, key };
 
             // Lazily initialize the map of existing keys to indices to convert
             // O(N*M) lookups into O(N+M)
@@ -5747,7 +5753,8 @@ export function App() {
                       <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined} runnerOnline={runnersStatus === "connected" && activeRunnerInfo !== null} sessionCwd={activeSessionInfo?.cwd}>
                       <PizzaPiNavProvider actions={pizzaPiNavActions}>
                       <SessionNamesProvider value={sessionNamesMap}>
-                      <SessionViewer
+                      <Suspense fallback={<PanelFallback label="Session" />}>
+                      <LazySessionViewer
                         promptRef={promptRef}
                         sessionId={activeSessionId}
                         sessionName={sessionName}
@@ -5868,6 +5875,7 @@ export function App() {
                         analysis={analysis}
                         planModeEnabled={planModeEnabled}
                         runnerId={activeSessionInfo?.runnerId ?? undefined}
+                        livePort={dynamicPanels.find((p) => p.serviceId === "live")?.port}
                         sessionCwd={activeSessionInfo?.cwd || undefined}
                         onAppendSystemMessage={appendLocalSystemMessage}
                         onSpawnAgentSession={handleSpawnAgentSession}
@@ -5926,6 +5934,7 @@ export function App() {
                         onButtonDragStart={handleButtonDragStart}
                         toolbarPositions={buttonPositions.positions}
                       />
+                      </Suspense>
                       </SessionNamesProvider>
                       </PizzaPiNavProvider>
                       </SigilProvider>
