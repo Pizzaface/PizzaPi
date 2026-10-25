@@ -649,12 +649,23 @@ export class TunnelRelay {
     }
 
     const userId = typeof authResult === "string" ? authResult : "default";
-    if (ws.readyState !== WebSocket.OPEN) return;
-
     // Guard: socket may have closed during the async auth await — abort to avoid a ghost runner.
     // Must run BEFORE any mutation of existing-runner state so a healthy existing runner is preserved.
     if (ws.readyState !== WebSocket.OPEN) {
       this.log.warn("[tunnel-relay] Socket closed during auth, aborting registration:", msg.runnerId);
+      return;
+    }
+
+    // Check after async authorization: two register frames may be in flight.
+    // A socket owns one identity; changing it leaves the old runner map entry
+    // alive after disconnect. An identical retry is harmless and idempotent.
+    const boundRunnerId = this.wsToRunner.get(ws);
+    if (boundRunnerId) {
+      if (boundRunnerId === msg.runnerId && this.runners.get(boundRunnerId)?.userId === userId) {
+        this.send(ws, { type: "registered", runnerId: boundRunnerId });
+      } else {
+        this.send(ws, { type: "error", message: "Socket already registered to a runner" });
+      }
       return;
     }
 

@@ -47,6 +47,10 @@ function withEnv(vars: Record<string, string | undefined>, fn: () => void): void
 }
 
 describe("tunnel token — basic sign/verify", () => {
+    test.each([[null], [[]], [42], ["not-an-object"]])("rejects non-object token JSON without throwing: %j", (value) => {
+        const token = Buffer.from(JSON.stringify(value)).toString("base64url") + ".untrusted";
+        expect(verifyTunnelToken(token)).toBeNull();
+    });
     test("creates scoped signed path tokens with v2 claims", () => {
         const ctx = createTestAuthContext({ dbPath: ":memory:" });
         runWithAuthContext(ctx, () => {

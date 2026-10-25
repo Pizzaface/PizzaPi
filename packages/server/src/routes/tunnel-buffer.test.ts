@@ -59,6 +59,21 @@ async function createRegisteredRelay(apiKey = "test-key", runnerId = "r1") {
 }
 
 describe("proxyTunnelRequestViaRelay buffered response cap", () => {
+  test("viewer abort before response headers settles the proxy promise", async () => {
+    const { relay, mock } = await createRegisteredRelay();
+    const controller = new AbortController();
+    try {
+      const req = new Request("http://example.com/api/tunnel/runner/r1/3000/", { signal: controller.signal });
+      const pending = proxyTunnelRequestViaRelay(req, relay, "r1", "abort-before-headers", "", 3000, "/", "/", {});
+      controller.abort();
+      const result = await Promise.race([
+        pending.then(response => response.status),
+        new Promise(resolve => setTimeout(() => resolve("still pending"), 100)),
+      ]);
+      expect(result).toBe(499);
+      expect(mock.sent.map(m => JSON.parse(m)).some(m => m.type === "request-end" && m.id === "abort-before-headers")).toBe(true);
+    } finally { relay.dispose(); }
+  });
   test("rejects upstream response with Content-Length exceeding cap", async () => {
     const { relay, mock } = await createRegisteredRelay();
     const req = new Request("http://example.com/api/tunnel/runner/r1/3000/", { method: "GET" });

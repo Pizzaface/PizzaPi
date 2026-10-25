@@ -54,6 +54,19 @@ function unexposeViaMessage(socket: ReturnType<typeof createMockSocket>, session
 }
 
 describe("TunnelService", () => {
+    test.each([null, {}, { port: "3000" }, { port: 3000.5 }, { port: NaN }, { port: Infinity }])("rejects malformed port commands without throwing: %j", (payload) => {
+        const service = new TunnelService();
+        const socket = createMockSocket();
+        const client = createMockTunnelClient();
+        service.setTunnelClient(client as any);
+        service.init(socket as any, { isShuttingDown: () => false });
+        for (const type of ["tunnel_expose", "tunnel_unexpose"]) {
+            expect(() => getServiceMessageHandler(socket)({ serviceId: "tunnel", type, sessionId: "sess-a", requestId: "bad", payload })).not.toThrow();
+            expect((socket.emitted.at(-1)?.[1] as any)?.type).toBe("tunnel_error");
+        }
+        expect(client.exposePort).not.toHaveBeenCalled();
+        expect(client.unexposePort).not.toHaveBeenCalled();
+    });
     test("setTunnelClient re-exposes already known ports", () => {
         const service = new TunnelService();
         const socket = createMockSocket();

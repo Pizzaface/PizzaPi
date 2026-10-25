@@ -64,6 +64,7 @@ import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, u
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { parsePanelId, scopePanelIdToRunner } from "@/components/service-panels/panel-instance";
+import { resolveTunnelSession } from "@/components/service-panels/tunnel-session";
 import { runnerDisplayName, runnerHue } from "@/components/service-panels/runner-scope";
 import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction, computeAutoOpenPanels, resolveLauncherSource } from "@/utils/servicePanelUtils";
 import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
@@ -4569,19 +4570,11 @@ export function App() {
     return activeSessionId;
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
 
-  // Runner-scoped tunnel panels keep their own service-session identity while
-  // the viewer moves between runners. HTTP itself uses runnerId, but tunnel
-  // service commands still need a live session to own/list session tunnels.
+  // Tunnel controls follow the viewed session on their runner. Keep the
+  // shared iframe routing cache stable; use it only when viewing another runner.
   const resolveTunnelSessionForRunner = React.useCallback((runnerId: string): string | undefined => {
-    const cached = tunnelSessionMapRef.current.get(runnerId);
-    if (cached && liveSessions.some((s) => s.sessionId === cached && s.runnerId === runnerId)) return cached;
-    const live = liveSessions.find((s) => s.runnerId === runnerId);
-    if (live) {
-      tunnelSessionMapRef.current.set(runnerId, live.sessionId);
-      return live.sessionId;
-    }
-    return undefined;
-  }, [liveSessions]);
+    return resolveTunnelSession(runnerId, activeSessionId, tunnelSessionMapRef.current.get(runnerId), liveSessions);
+  }, [liveSessions, activeSessionId]);
 
   // Runner service panels — dynamically discovered
   const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket, activeRunnerInfo);
@@ -4832,7 +4825,7 @@ export function App() {
     [declaredPanelPlacements],
   );
 
-  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState(resolveDeclaredPanelPlacement);
+  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, openPanel: openServicePanel, closePanelById: closeServicePanelById, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState(resolveDeclaredPanelPlacement);
 
   // Always-current ref so the runner-change effect below can read the active
   // panel set without listing it as a dependency (avoids a close→reopen loop).
@@ -4918,14 +4911,12 @@ export function App() {
       const info = envelope.payload as { pinned?: boolean } | undefined;
       if (info?.pinned) return; // Don't auto-open for daemon-pinned panel ports
       const targetRunnerId = envelope.runnerId ?? activeSessionInfo?.runnerId;
-      // Open the Tunnel panel if not already open
-      if (!activeServicePanels.has(scopePanelIdToRunner("tunnel", targetRunnerId))) {
-        toggleServicePanel(scopePanelIdToRunner("tunnel", targetRunnerId));
-      }
+      // Duplicate/batched registrations must open, never toggle back closed.
+      openServicePanel(scopePanelIdToRunner("tunnel", targetRunnerId));
     };
     viewerSocket.on("service_message", handler);
     return () => { viewerSocket.off("service_message", handler); };
-  }, [viewerSocket, activeServicePanels, activeSessionInfo?.runnerId, toggleServicePanel]);
+  }, [viewerSocket, activeSessionInfo?.runnerId, openServicePanel]);
 
   // Always-current ref to the computed panel groups (defined below) so the
   // toggle handler can check zone contents without a dependency cycle.

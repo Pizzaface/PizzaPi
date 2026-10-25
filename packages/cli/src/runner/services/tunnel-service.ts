@@ -64,10 +64,10 @@ export class TunnelService implements ServiceHandler {
                     this.handleList(sessionId, envelope.requestId);
                     break;
                 case "tunnel_expose":
-                    this.handleExpose(sessionId, envelope.requestId, envelope.payload as { port: number; name?: string });
+                    this.handleExpose(sessionId, envelope.requestId, (envelope.payload ?? {}) as { port: number; name?: string });
                     break;
                 case "tunnel_unexpose":
-                    this.handleUnexpose(sessionId, envelope.requestId, envelope.payload as { port: number });
+                    this.handleUnexpose(sessionId, envelope.requestId, (envelope.payload ?? {}) as { port: number });
                     break;
             }
         };
@@ -237,7 +237,7 @@ export class TunnelService implements ServiceHandler {
         if (!this.socket) return;
         const { port, name } = payload;
 
-        if (!port || port < 1 || port > 65535) {
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
             this.emitTunnelError(requestId, sessionId, `Invalid port: ${port}`);
             return;
         }
@@ -271,7 +271,7 @@ export class TunnelService implements ServiceHandler {
         if (!this.socket) return;
         const { port } = payload;
 
-        if (!port || port < 1 || port > 65535) {
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
             this.emitTunnelError(requestId, sessionId, `Invalid port: ${port}`);
             return;
         }

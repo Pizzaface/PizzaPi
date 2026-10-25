@@ -6,14 +6,8 @@
  * position still wins.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { Window } from "happy-dom";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
-
-const win = new Window({ url: "http://localhost/" });
-(globalThis as any).window = win;
-(globalThis as any).document = win.document;
-(globalThis as any).localStorage = win.localStorage;
 
 const { useServicePanelState } = await import("./ServicePanels");
 
@@ -23,6 +17,16 @@ afterEach(() => {
 });
 
 describe("useServicePanelState — declared placement", () => {
+  test("duplicate auto-open notifications in one React batch leave the panel open", () => {
+    const { result } = renderHook(() => useServicePanelState());
+    act(() => {
+      // Before openPanel existed, the auto-open handler called togglePanel.
+      const open = result.current.openPanel ?? result.current.togglePanel;
+      open("tunnel@runner-1");
+      open("tunnel@runner-1");
+    });
+    expect(result.current.activePanelIds.has("tunnel@runner-1")).toBe(true);
+  });
   test("uses the package-declared placement when the user has not moved the panel", () => {
     const placements = new Map<string, PanelPosition>([["schedules", "left-bottom"]]);
     const { result } = renderHook(() => useServicePanelState((id) => placements.get(id)));

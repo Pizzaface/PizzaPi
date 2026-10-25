@@ -83,6 +83,7 @@ const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key"]);
 
 type LoopbackHost = "127.0.0.1" | "[::1]";
 type ActiveRequest = {
+  port: number;
   controller: AbortController;
   req: http.ClientRequest;
   /** Body chunks buffered for loopback retry replay; null once connected or over limit. */
@@ -230,6 +231,7 @@ export class TunnelClient extends EventEmitter {
   private loopbackHost = new Map<number, LoopbackHost>();
   /** Active local WebSocket connections: wsId → WebSocket */
   private activeWs = new Map<string, WebSocket>();
+  private wsPorts = new WeakMap<WebSocket, number>();
   /** Detected protocol per exposed port (TLS probe result). */
   private portProtocol = new Map<number, "http" | "https">();
   /** Ports with a TLS probe currently in flight. */
@@ -381,6 +383,15 @@ export class TunnelClient extends EventEmitter {
     this.exposedSince.delete(port);
     this.unexposedAt.set(port, Date.now());
     this.portProtocol.delete(port);
+    // Closing the final exposure revokes established streams as well as links.
+    for (const [id, active] of this.activeRequests) {
+      if (active.port === port) this.failActiveRequest(id, active, "Tunnel port closed");
+    }
+    for (const [id, ws] of this.activeWs) {
+      if (this.wsPorts.get(ws) !== port) continue;
+      this.handleWsClose({ type: "ws-close", id, code: 1000, reason: "Tunnel port closed" });
+      this.send({ type: "ws-close", id, code: 1000, reason: "Tunnel port closed" });
+    }
   }
 
   /**
@@ -767,6 +778,7 @@ export class TunnelClient extends EventEmitter {
 
     const req = attempt(this.loopbackHost.get(port) ?? "127.0.0.1", true);
     active = {
+      port,
       controller,
       req,
       bodyChunks: [],
@@ -956,6 +968,7 @@ export class TunnelClient extends EventEmitter {
         ...(wsUseTls ? { tls: { rejectUnauthorized: false } } : {}),
       });
 
+      this.wsPorts.set(ws, port);
       this.replaceActiveWs(id, ws);
       ws.binaryType = "arraybuffer";
 

@@ -103,6 +103,16 @@ afterEach(() => {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 describe("TunnelPanel — stale tunnel state fix", () => {
+    test("switching the control session clears old tabs and selects the new session's port", async () => {
+        channelState.available = true;
+        const { container, rerender } = render(<TunnelPanel sessionId="a" runnerId="r" panelId="tunnel@r" />);
+        await act(async () => capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(3000)] }));
+        expect(container.textContent).toContain("3000");
+        await act(async () => rerender(<TunnelPanel sessionId="b" runnerId="r" panelId="tunnel@r" />));
+        expect(container.textContent).not.toContain("3000");
+        await act(async () => capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(4000)] }));
+        expect(getIframes(container)[0]?.getAttribute("src")).toContain("/4000/");
+    });
     test("sends tunnel_list when available becomes true", async () => {
         channelState.available = true;
 
