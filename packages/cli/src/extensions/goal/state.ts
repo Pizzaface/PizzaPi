@@ -108,11 +108,41 @@ export function clearGoal(
     }
 
     clearPendingGuidance(sessionId);
+    delete existing.waiting;
     existing.status = "cancelled";
     existing.stoppedAt = Date.now();
     existing.stopReason = "cancelled";
     persist(existing, pi);
     return { success: true, message: "Goal cancelled." };
+}
+
+/** Suspend goal nudges, not the session or its normal incoming messages. */
+export function waitForGoal(
+    sessionId: string,
+    waiting: NonNullable<GoalState["waiting"]>,
+    pi: Pick<ExtensionAPI, "appendEntry">,
+): GoalState {
+    const state = goalsBySessionId.get(sessionId);
+    if (!state || state.status !== "active") throw new Error("No active goal to wait on.");
+    const reason = waiting.reason.trim();
+    const wakeOn = waiting.wakeOn.trim();
+    if (!reason || !wakeOn) throw new Error("Waiting requires a reason and an expected wake-up event.");
+    // Agent/tool requests cannot undo an explicit user pause.
+    state.waiting = state.waiting?.manual ? state.waiting : { reason, wakeOn, ...(waiting.manual ? { manual: true } : {}) };
+    state.controlVersion = (state.controlVersion ?? 0) + 1;
+    clearPendingGuidance(sessionId);
+    persist(state, pi);
+    return state;
+}
+
+export function resumeGoal(sessionId: string, pi: Pick<ExtensionAPI, "appendEntry">): GoalState | undefined {
+    const state = goalsBySessionId.get(sessionId);
+    if (!state || state.status !== "active" || !state.waiting) return undefined;
+    delete state.waiting;
+    state.controlVersion = (state.controlVersion ?? 0) + 1;
+    clearPendingGuidance(sessionId);
+    persist(state, pi);
+    return state;
 }
 
 /**
@@ -158,6 +188,29 @@ export function recordCompletedRun(sessionId: string): GoalState | undefined {
     return state;
 }
 
+/** Account for a paid judge call even when its verdict became stale. */
+export function recordEvaluatorUsage(
+    sessionId: string,
+    owner: GoalState,
+    feedback: GoalEvaluatorFeedback,
+    pi: Pick<ExtensionAPI, "appendEntry">,
+): void {
+    const cost = Math.max(0, feedback.cost ?? 0);
+    const tokens = Math.max(0, feedback.tokensUsed ?? 0);
+    if (!cost && !tokens) return;
+    pi.appendEntry(GOAL_EVALUATOR_USAGE_CUSTOM_TYPE, {
+        provider: feedback.model?.provider ?? "unknown",
+        model: feedback.model?.id ?? "unknown",
+        tokens,
+        cost,
+        timestamp: feedback.timestamp,
+    });
+    // Replacement/cancellation must not charge a different active goal.
+    if (goalsBySessionId.get(sessionId) !== owner || owner.status !== "active") return;
+    owner.costSpend += cost;
+    owner.tokenSpend += tokens;
+}
+
 /**
  * Append an evaluator feedback entry.
  */
@@ -174,21 +227,15 @@ export function recordEvaluation(
     if (state.evaluations.length > MAX_EVALUATIONS) {
         state.evaluations.splice(0, state.evaluations.length - MAX_EVALUATIONS);
     }
-    if (feedback.cost) state.costSpend += Math.max(0, feedback.cost);
-    if (feedback.tokensUsed) state.tokenSpend += feedback.tokensUsed;
-
-    if (feedback.cost || feedback.tokensUsed) {
-        pi.appendEntry(GOAL_EVALUATOR_USAGE_CUSTOM_TYPE, {
-            provider: feedback.model?.provider ?? "unknown",
-            model: feedback.model?.id ?? "unknown",
-            tokens: feedback.tokensUsed ?? 0,
-            cost: feedback.cost ?? 0,
-            timestamp: feedback.timestamp,
-        });
-    }
+    recordEvaluatorUsage(sessionId, state, feedback, pi);
 
     if (feedback.verdict === "met" && state.status === "active") {
         markStopped(state, "goal_met");
+    }
+
+    if (!state.waiting?.manual && feedback.verdict === "waiting" && feedback.reason.trim() && feedback.wakeOn?.trim()) {
+        state.waiting = { reason: feedback.reason.trim(), wakeOn: feedback.wakeOn.trim() };
+        clearPendingGuidance(sessionId);
     }
 
     persist(state, pi);
@@ -220,6 +267,7 @@ export function checkBudget(state: GoalState): GoalStopReason | undefined {
 }
 
 function markStopped(state: GoalState, reason: GoalStopReason): void {
+    delete state.waiting;
     state.status = mapStopReasonToStatus(reason);
     state.stoppedAt = Date.now();
     state.stopReason = reason;
@@ -279,7 +327,7 @@ function findLatestGoalState(
     for (const entry of entries) {
         if (entry.type !== "custom" || entry.customType !== GOAL_STATE_CUSTOM_TYPE) continue;
         const data = entry.data as GoalState | undefined;
-        if (data && data.version === 1 && (!latest || (data.createdAt ?? 0) > (latest.createdAt ?? 0))) {
+        if (data && data.version === 1 && (!latest || (data.createdAt ?? 0) >= (latest.createdAt ?? 0))) {
             latest = data;
         }
     }
@@ -294,6 +342,7 @@ export function restoreGoal(
     sessionId: string,
     entries: Array<{ type: string; customType?: string; data?: unknown }>,
 ): GoalState | undefined {
+    resetSession(sessionId);
     const latest = findLatestGoalState(entries);
 
     if (!latest || latest.status === "cancelled" || latest.status === "met") {
@@ -322,6 +371,7 @@ export function toMetaGoalStatus(state: GoalState): MetaGoalStatus {
         costSpend: state.costSpend,
         maxCost: state.budget.maxCost,
         lastReason: lastEval?.reason,
+        waiting: state.waiting,
     };
 }
 
@@ -340,7 +390,7 @@ export function getActiveGoalFromEntries(
  * Single-line status for the TUI footer / status bar.
  */
 export function formatCompactGoalStatus(state: GoalState): string {
-    const parts = ["◎ /goal active"];
+    const parts = [state.waiting?.manual ? "◎ /goal paused" : state.waiting ? "◎ /goal waiting" : "◎ /goal active"];
 
     if (state.budget.maxTurns !== undefined) {
         parts.push(`run ${state.turnCount}/${state.budget.maxTurns}`);
@@ -349,7 +399,9 @@ export function formatCompactGoalStatus(state: GoalState): string {
     }
 
     const lastEval = state.evaluations.at(-1);
-    if (lastEval?.verdict === "not_met" && lastEval.reason) {
+    if (state.waiting) {
+        parts.push(`waiting for ${state.waiting.wakeOn}`);
+    } else if (lastEval?.verdict === "not_met" && lastEval.reason) {
         const reason = lastEval.reason.replace(/\s+/g, " ").trim();
         parts.push(reason.length > 60 ? `${reason.slice(0, 57)}...` : reason);
     }
@@ -368,7 +420,8 @@ export function formatGoalStatus(state: GoalState): string {
 
     return [
         `Goal: ${state.condition.description}`,
-        `Status: ${state.status}`,
+        `Status: ${state.waiting?.manual ? "paused" : state.waiting ? "waiting" : state.status}`,
+        state.waiting ? `Waiting: ${state.waiting.reason}\nWake on: ${state.waiting.wakeOn}\nUse /goal resume to retry manually.` : undefined,
         `Runs: ${state.turnCount}`,
         `Tokens: ${state.tokenSpend.toLocaleString()}`,
         `Cost: $${state.costSpend.toFixed(4)}`,

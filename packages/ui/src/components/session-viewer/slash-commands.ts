@@ -202,6 +202,8 @@ export function useSlashCommands(
         subCommands: [
           { name: "status", description: "Show the active goal and budget" },
           { name: "clear", description: "Clear the active goal" },
+          { name: "pause", description: "Pause the goal loop until /goal resume" },
+          { name: "resume", description: "Resume a waiting or paused goal without resetting its budget" },
         ],
       },
     ],

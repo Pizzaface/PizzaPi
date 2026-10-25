@@ -22,6 +22,7 @@
  * accrues spend.
  */
 import type { MetaGoalStatus } from "@pizzapi/protocol";
+import { Type } from "@earendil-works/pi-ai";
 import type {
     AssistantMessage,
     ToolResultMessage,
@@ -48,9 +49,12 @@ import {
     getPendingGuidance,
     recordCompletedRun,
     recordEvaluation,
+    recordEvaluatorUsage,
     recordTurnSpend,
     resetSession,
     restoreGoal,
+    resumeGoal,
+    waitForGoal,
     setGoal,
     setPendingGuidance,
     toMetaGoalStatus,
@@ -138,6 +142,18 @@ function handleGoalCommand(
 
         if (parsed.clear) {
             return clearGoal(sessionId, pi);
+        }
+        if (parsed.pause) {
+            const existing = getGoal(sessionId);
+            if (!existing || existing.status !== "active") return { success: false, message: "No active goal to pause." };
+            const state = waitForGoal(sessionId, { reason: "Paused by user.", wakeOn: "/goal resume", manual: true }, pi);
+            return { success: true, message: "Goal paused. Running work is not interrupted. Use /goal resume to restart the goal loop.", state };
+        }
+        if (parsed.resume) {
+            const state = resumeGoal(sessionId, pi);
+            return state
+                ? { success: true, message: "Goal resumed.", state, kickoff: true }
+                : { success: false, message: "No waiting goal to resume." };
         }
 
         const state = setGoal(sessionId, parsed.condition, parsed.budget, pi);
@@ -265,7 +281,7 @@ function stopForBudget(
         customType: "goal_status",
         content: `Goal budget reached: ${budgetReason}. The goal is now inactive; you may continue the session.`,
         display: true,
-    });
+    }, { triggerTurn: false });
 }
 
 /**
@@ -410,12 +426,20 @@ async function runGoalStopCheck(
     state = recordCompletedRun(sessionId) ?? state;
     persist(state, pi);
 
+    // Explicit waiting bypasses evaluation AND the cadence's unconditional
+    // continuation. Incoming messages still run normally and clear the wait.
+    if (state.waiting) {
+        enforceBudget(sessionId, state, pi);
+        return;
+    }
+
     // If background subagents or queued user/trigger messages are still
     // pending, don't start another goal iteration. The existing work will
     // produce more runs and the evaluator will check again when it's actually
     // idle. This prevents the goal loop from drowning out subagent results or
     // relay trigger responses.
     if (hasActiveSubagents() || (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages())) {
+        enforceBudget(sessionId, state, pi);
         return;
     }
 
@@ -441,11 +465,24 @@ async function runGoalStopCheck(
         return;
     }
 
+    const evaluatedState = state;
+    const controlVersion = state.controlVersion;
+    const stillCurrent = () => getGoal(sessionId) === evaluatedState && evaluatedState.status === "active" && evaluatedState.controlVersion === controlVersion;
     const evaluator = await resolveEvaluator(sessionId, state, config, ctx);
+    if (!stillCurrent() || ctx.signal?.aborted) return;
     const evalContext = buildEvaluationContext(state, event, ctx, evaluator.usesTranscript === true);
 
     try {
         const feedback = await evaluator.evaluate(state, evalContext);
+        // Commands can pause/replace/cancel the goal while the judge is in
+        // flight. Discard its verdict, not its billed usage.
+        if (!stillCurrent() || ctx.signal?.aborted) {
+            recordEvaluatorUsage(sessionId, evaluatedState, feedback, pi);
+            if (getGoal(sessionId) === evaluatedState && evaluatedState.status === "active") {
+                if (!enforceBudget(sessionId, evaluatedState, pi)) persist(evaluatedState, pi);
+            }
+            return;
+        }
         // Verify the shared-prefix assumption instead of trusting it. A miss
         // means we just paid full input price on the session model, so this
         // session stops reusing the session context from here on.
@@ -457,6 +494,7 @@ async function runGoalStopCheck(
         }
         state = recordEvaluation(sessionId, feedback, pi) ?? state;
     } catch (err) {
+        if (!stillCurrent() || ctx.signal?.aborted) return;
         const reason = err instanceof Error ? err.message : String(err);
         log.error("Goal evaluation failed", err);
         state = recordEvaluation(sessionId, {
@@ -474,13 +512,13 @@ async function runGoalStopCheck(
                 customType: "goal_status",
                 content: `Goal met: ${state.condition.description}`,
                 display: true,
-            });
+            }, { triggerTurn: false });
         } else {
             pi.sendMessage({
                 customType: "goal_status",
                 content: `Goal stopped: ${state.stopReason}.`,
                 display: true,
-            });
+            }, { triggerTurn: false });
         }
         // Never shutdown when the goal is met. The agent finishes the current
         // run and returns control to the user.
@@ -490,6 +528,10 @@ async function runGoalStopCheck(
     // Budgets are checked AFTER evaluation so a goal met on the final
     // budgeted run reports "met" above instead of "budget reached".
     if (enforceBudget(sessionId, state, pi)) return;
+
+    // Results can arrive while the evaluator awaits its provider. Let their
+    // existing delivery path drive the next turn instead of adding a nudge.
+    if (state.waiting || hasActiveSubagents() || ctx.hasPendingMessages?.()) return;
 
     // Only a "not_met" verdict auto-continues. "uncertain" (evaluator failed,
     // no auth, unparseable reply) returns control to the user so a broken
@@ -504,12 +546,46 @@ async function runGoalStopCheck(
 }
 
 export const goalExtension: ExtensionFactory = (pi) => {
+    pi.registerTool({
+        name: "goal_wait",
+        label: "Wait for goal progress",
+        description: "Pause an active /goal's automatic continuation when no useful work remains until external input arrives. Supply why you are blocked and the expected wake-up event, then finish your response. Incoming user messages, child results, background completions, and triggers can resume work. This does not schedule a timer or subscribe to events: arrange a notification first, or ask the user for the missing input. Do not poll or repeat waiting messages.",
+        parameters: Type.Object({
+            reason: Type.String({ minLength: 1, maxLength: 1000, description: "Why no useful work can proceed now" }),
+            wakeOn: Type.String({ minLength: 1, maxLength: 1000, description: "Expected incoming notification or user input that permits progress" }),
+        }),
+        async execute(_id, params, _signal, _onUpdate, ctx) {
+            const sessionId = getSessionId(ctx);
+            const state = waitForGoal(sessionId, params, pi);
+            broadcastGoalStatus(sessionId, state, ctx, pi);
+            return {
+                content: [{ type: "text", text: state.waiting!.manual
+                    ? "Goal is manually paused. Only /goal resume restarts the goal loop."
+                    : `Goal waiting: ${state.waiting!.reason}\nExpected input: ${state.waiting!.wakeOn}\nFinish this run. No automatic goal nudges will be sent until new input arrives. No timer or subscription was created.` }],
+                details: state.waiting,
+            };
+        },
+    });
+
+    // This fires for queued steering/follow-up deliveries too, not just a new
+    // user prompt. A tool result or our own status card must not undo a wait.
+    pi.on("message_start", (event, ctx) => {
+        const message = event.message;
+        if (message.role !== "user" && !(message.role === "custom" && message.customType !== "goal_status")) return;
+        const sessionId = getSessionId(ctx);
+        if (getGoal(sessionId)?.waiting?.manual) return;
+        const state = resumeGoal(sessionId, pi);
+        if (state) broadcastGoalStatus(sessionId, state, ctx, pi);
+    });
+
     pi.registerCommand("goal", {
         description: "Set a success condition and optional budget for the session",
         getArgumentCompletions: (prefix: string) => {
             const options = [
                 { value: "status", label: "status", description: "Show the active goal and budget" },
                 { value: "clear", label: "clear", description: "Clear the active goal" },
+                { value: "pause", label: "pause", description: "Pause the goal loop until /goal resume" },
+                { value: "resume", label: "resume", description: "Resume a waiting or paused goal without resetting its budget" },
             ];
             const p = prefix.trim().toLowerCase();
             const filtered = p ? options.filter((o) => o.value.startsWith(p)) : options;
@@ -521,7 +597,7 @@ export const goalExtension: ExtensionFactory = (pi) => {
                 customType: "goal_status",
                 content: result.message,
                 display: true,
-            });
+            }, { triggerTurn: false });
             broadcastGoalStatus(getSessionId(ctx), getGoal(getSessionId(ctx)), ctx, pi);
             if (result.kickoff && result.state) {
                 // Setting a goal starts a run immediately, with the condition

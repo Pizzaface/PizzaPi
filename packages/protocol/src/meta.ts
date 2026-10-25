@@ -135,6 +135,17 @@ export interface MetaGoalStatus {
   costSpend: number;
   maxCost?: number;
   lastReason?: string;
+  /** Present while an active goal is paused waiting for an external event. */
+  waiting?: MetaGoalWaiting;
+}
+
+export interface MetaGoalWaiting {
+  /** Why the goal is waiting. */
+  reason: string;
+  /** Event expected to wake the goal back up. */
+  wakeOn: string;
+  /** User pause: incoming messages must not resume the goal loop. */
+  manual?: boolean;
 }
 
 export interface SessionMetaState {

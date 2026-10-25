@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Target } from "lucide-react";
+import { Hourglass, Target } from "lucide-react";
 import type { MetaGoalStatus } from "@pizzapi/protocol";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -17,6 +17,9 @@ interface GoalStatusBadgeProps {
  *
  * `turnCount` counts agent runs — one prompt through to control returning to
  * the user — not LLM round-trips, so the label reads "run".
+ *
+ * An active goal with `waiting` set is paused until an external event; the
+ * badge labels it "waiting" and shows the reason and expected wake event.
  */
 export function GoalStatusBadge({ goal }: GoalStatusBadgeProps) {
   if (!goal || goal.status !== "active") return null;
@@ -26,7 +29,8 @@ export function GoalStatusBadge({ goal }: GoalStatusBadgeProps) {
       ? `run ${goal.turnCount}/${goal.maxTurns}`
       : `run ${goal.turnCount}`;
 
-  const rawReason = goal.lastReason?.replace(/\s+/g, " ").trim();
+  const waiting = goal.waiting;
+  const rawReason = (waiting?.reason ?? goal.lastReason)?.replace(/\s+/g, " ").trim();
   const displayReason =
     rawReason && rawReason.length > 45 ? `${rawReason.slice(0, 42)}…` : rawReason;
 
@@ -35,14 +39,20 @@ export function GoalStatusBadge({ goal }: GoalStatusBadgeProps) {
       <TooltipTrigger asChild>
         <span
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border border-emerald-500/40",
-            "bg-emerald-500/10 px-2 py-0.5 text-[0.65rem] font-medium text-emerald-700",
-            "dark:text-emerald-400 uppercase tracking-wide cursor-default",
+            "inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[0.65rem] font-medium",
+            "uppercase tracking-wide cursor-default",
+            waiting
+              ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
           )}
         >
-          <Target className="size-3" aria-hidden="true" />
-          <span>/goal active</span>
-          <span className="opacity-80">· {turnText}</span>
+          {waiting ? (
+            <Hourglass className="size-3 shrink-0" aria-hidden="true" />
+          ) : (
+            <Target className="size-3 shrink-0" aria-hidden="true" />
+          )}
+          <span className="shrink-0 whitespace-nowrap">{waiting?.manual ? "/goal paused" : waiting ? "/goal waiting" : "/goal active"}</span>
+          <span className="opacity-80 truncate max-w-40">· {waiting?.manual ? "/goal resume to continue" : waiting ? `wakes on ${waiting.wakeOn}` : turnText}</span>
           {displayReason && <span className="opacity-80 truncate max-w-32">· {displayReason}</span>}
         </span>
       </TooltipTrigger>
@@ -53,6 +63,11 @@ export function GoalStatusBadge({ goal }: GoalStatusBadgeProps) {
             {turnText}
             {goal.maxTokens !== undefined && ` · tokens ${goal.tokenSpend.toLocaleString()}/${goal.maxTokens.toLocaleString()}`}
           </p>
+          {waiting && (
+            <p className="text-xs normal-case">
+              Waiting for <span className="font-mono">{waiting.wakeOn}</span>
+            </p>
+          )}
           {rawReason && <p className="text-xs normal-case italic">“{rawReason}”</p>}
         </div>
       </TooltipContent>

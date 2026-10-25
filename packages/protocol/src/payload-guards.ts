@@ -241,7 +241,17 @@ function normalizeGoal(value: unknown): MetaGoalStatus | null {
     maxTokens: typeof value.maxTokens === "number" ? value.maxTokens : undefined,
     maxCost: typeof value.maxCost === "number" ? value.maxCost : undefined,
     lastReason: typeof value.lastReason === "string" ? value.lastReason : undefined,
+    waiting: normalizeGoalWaiting(value.waiting),
   };
+}
+
+/** Malformed waiting info is dropped; the goal itself stays valid. */
+function normalizeGoalWaiting(value: unknown): MetaGoalStatus["waiting"] {
+  if (!isPlainObject(value)) return undefined;
+  const { reason, wakeOn } = value;
+  if (typeof reason !== "string" || !reason.trim()) return undefined;
+  if (typeof wakeOn !== "string" || !wakeOn.trim()) return undefined;
+  return { reason, wakeOn, ...(value.manual === true ? { manual: true } : {}) };
 }
 
 // ── Viewer event envelope ───────────────────────────────────────────────────

@@ -338,6 +338,15 @@ describe("remote connection startup gate", () => {
 
         expect(abort).toHaveBeenCalledTimes(2);
         expect(rctx.pendingSteeringSlashCommands).toBe(0);
+
+        // These only change the goal loop; a web pause/resume must not abort
+        // an in-flight shell or model call just to update that state.
+        for (const text of ["/goal pause", "/goal resume"]) {
+            lastSocket!.trigger("input", { text, deliverAs: "steer" });
+            await sleep(50);
+            expect(sendUserMessage).toHaveBeenCalledWith(text, expect.objectContaining({ deliverAs: "steer" }));
+        }
+        expect(abort).toHaveBeenCalledTimes(2);
     });
 
     test("delivers immediately when gate is not armed (normal CLI session)", async () => {

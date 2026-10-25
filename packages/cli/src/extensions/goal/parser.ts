@@ -84,6 +84,9 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
     if (CLEAR_ALIASES.has(first)) {
         return { rawCondition: first, condition: { description: first, evaluator: "keyword" }, budget: {}, clear: true, statusOnly: false };
     }
+    if (tokens.length === 1 && (first === "pause" || first === "resume")) {
+        return { rawCondition: "", condition: { description: "", evaluator: "keyword" }, budget: {}, clear: false, statusOnly: false, [first]: true };
+    }
     if (first === "status") {
         return { rawCondition: "status", condition: { description: "status", evaluator: "keyword" }, budget: {}, clear: false, statusOnly: true };
     }

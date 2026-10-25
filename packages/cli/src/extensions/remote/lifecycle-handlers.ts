@@ -39,7 +39,7 @@ import {
 } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { PLUGIN_COMMAND_LIVE_EVENT } from "../plugin-command.js";
-import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
+import { clearAndCancelPendingTriggers, sendSessionMessageWithAck } from "../triggers/extension.js";
 import { receivedTriggers } from "../triggers/extension.js";
 import { clearTriggerHistory, listTriggerSubscriptions, unsubscribeTrigger } from "../trigger-client.js";
 import { setTodoUpdateCallback, setTodoMetaEmitter, type TodoItem } from "../update-todo.js";
@@ -128,10 +128,33 @@ export interface LifecycleHandlerState {
 }
 
 /**
- * Cleanup performed on every session transition (local-TUI non-startup
- * session_start, or worker session_switch with reason "new"):
- * clears stale child links, cancels pending triggers, and resets
- * session-complete generation state.
+ * Reasons that start a NEW conversation generation (/new, /resume) and so
+ * must drop the previous generation's parent/child links and triggers.
+ *
+ * "fork" (/rewind) is deliberately excluded: it branches the transcript but
+ * keeps the same relay session ID, so parent/child membership — keyed by
+ * relay session ID — still describes this session. "wake" (suspend-wake boot
+ * resume) is excluded for the same reason.
+ */
+export function isGenerationTransitionReason(reason: unknown): boolean {
+    return reason === "new" || reason === "resume";
+}
+
+/** Re-arm session_complete for a new transcript branch without touching links. */
+function resetSessionCompleteState(state: LifecycleHandlerState): void {
+    state.sessionCompleteFired = false;
+    state.sessionCompleteGeneration += 1;
+    state.pendingSessionCompleteDelivery = null;
+    state.pendingSessionCompleteSocket = null;
+    state.pendingSessionCompleteTransportGeneration = null;
+    state.lastSessionCompletePayload = null;
+}
+
+/**
+ * Cleanup performed on every generation transition (see
+ * isGenerationTransitionReason; local-TUI session_start or worker
+ * session_switch): clears stale child links, cancels pending triggers, and
+ * resets session-complete generation state.
  *
  * Exported so it can be called from the local-TUI session_start path and
  * tested independently.
@@ -258,12 +281,7 @@ export function performSessionTransitionCleanup({
     }
 
     // ── Session-complete generation state reset ───────────────────────────────
-    state.sessionCompleteFired = false;
-    state.sessionCompleteGeneration += 1;
-    state.pendingSessionCompleteDelivery = null;
-    state.pendingSessionCompleteSocket = null;
-    state.pendingSessionCompleteTransportGeneration = null;
-    state.lastSessionCompletePayload = null;
+    resetSessionCompleteState(state);
 }
 
 /** session_shutdown reasons that mean the session is actually ending (missing = legacy quit). */
@@ -365,9 +383,13 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         // Reason gate is the primary discriminator; localTuiTransitionCleanup
         // ensures worker path (which drives transitions via session_switch) never
         // double-cleans even if PIZZAPI_WORKER_CWD is unset.
-        const isTransitionReason = event?.reason === "new" || event?.reason === "resume" || event?.reason === "fork";
-        if (localTuiTransitionCleanup && isTransitionReason) {
+        // /fork (/rewind) keeps the relay session ID, so it only re-arms
+        // session_complete and keeps parent/child links and triggers.
+        if (localTuiTransitionCleanup && isGenerationTransitionReason(event?.reason)) {
             performSessionTransitionCleanup({ state, rctx, triggerWaits, delinkManager, cancellationManager, followUpGrace });
+        } else if (localTuiTransitionCleanup && event?.reason === "fork") {
+            followUpGrace.clearFollowUpGrace();
+            resetSessionCompleteState(state);
         }
         rctx.latestCtx = ctx;
         rctx.sessionStartedAt = Date.now();
@@ -398,14 +420,17 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         // Clear both follow-up shutdown state and any retry from the previous
         // generation before resetting completion payload state.
         followUpGrace.clearFollowUpGrace();
+        clearWaitingNoticeRetry();
 
         // ── Transition cleanup: cancel pending triggers and delink children ───
         // Worker session_switch must match local-TUI session_start parity:
-        // new/resume/fork are all real transitions (a previous conversation's
+        // new/resume are real generation transitions (a previous conversation's
         // stale child links and trigger subscriptions must not leak into the
-        // next one). Only "new" used to run full cleanup here, which let a
-        // /resume or /fork on the worker path inherit the prior generation's
-        // stale children — see A1-007 follow-up (GM a8yAXXwa).
+        // next one) — see A1-007 follow-up (GM a8yAXXwa).
+        //
+        // "fork" (/rewind) is NOT: it branches the transcript but keeps the
+        // same relay session ID, so its parent link, children, trigger
+        // subscriptions and history all still belong to this session.
         //
         // "wake" is deliberately NOT a transition reason: it is a suspend-wake
         // boot resume (initial-prompt.ts, tagged via sessionControlActions.
@@ -417,19 +442,14 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         // only this boot transition is tagged "wake"; a later real /resume
         // inside the same worker still passes no reason override and runs
         // full cleanup below.
-        if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
+        if (isGenerationTransitionReason(event.reason)) {
             performSessionTransitionCleanup({ state, rctx, triggerWaits, delinkManager, cancellationManager, followUpGrace });
         } else {
-            // Defensive fallback for "wake" and any other/unknown reason:
-            // still reset session-complete generation state (so the session
-            // can arm/fire session_complete again once idle) but skip delink
-            // and trigger cleanup — the parent link must stay intact.
-            state.sessionCompleteFired = false;
-            state.sessionCompleteGeneration += 1;
-            state.pendingSessionCompleteDelivery = null;
-            state.pendingSessionCompleteSocket = null;
-            state.pendingSessionCompleteTransportGeneration = null;
-            state.lastSessionCompletePayload = null;
+            // "fork", "wake" and any other/unknown reason: still reset
+            // session-complete generation state (so the session can arm/fire
+            // session_complete again once idle) but skip delink and trigger
+            // cleanup — the parent and child links must stay intact.
+            resetSessionCompleteState(state);
         }
 
         installFooter(rctx, ctx);
@@ -466,12 +486,14 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         sessionErrorFired = false;
         rctx.wasAborted = false;
         followUpGrace.clearFollowUpGrace();
+        clearWaitingNoticeRetry();
         rctx.forwardEvent(event);
     });
 
     pi.on("session_shutdown", async (event?: { reason?: string }) => {
         rctx.shuttingDown = true;
         followUpGrace.clearFollowUpGrace();
+        clearWaitingNoticeRetry();
         stopHeartbeat();
         stopSessionNameSync();
         stopWatchingSubagents();
@@ -502,6 +524,8 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.events.on("goal:state_changed", (goal: unknown) => {
         rctx.goalState = goal && typeof goal === "object" ? (goal as MetaGoalStatus) : null;
+        // Resume/clear/re-wait makes a pending notice retry stale.
+        if (waitingKey(rctx.goalState) === null) clearWaitingNoticeRetry();
         emitGoalUpdated(rctx, rctx.goalState);
         emitSessionMetadataUpdate(rctx);
     });
@@ -544,7 +568,9 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     async function trySuspendIdleChild(ctx: any): Promise<boolean> {
         const generation = state.sessionCompleteGeneration;
         const localProbe = () => ({
-            sessionCompleteDelivered: state.sessionCompleteFired,
+            sessionCompleteDelivered: state.sessionCompleteFired
+                || (waitingNoticeAckGeneration === state.sessionCompleteGeneration
+                    && waitingNoticeKey !== null && waitingNoticeKey === waitingKey(rctx.goalState)),
             // ctx.hasPendingMessages() only sees pi's own turn-input queue; a plain
             // send_message (no deliverAs) is queued separately in the inter-session
             // message bus and is invisible to pi, so fold it in here too — otherwise
@@ -596,6 +622,90 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         process.send?.({ type: "pre_suspend" });
         ctx.shutdown();
         return true;
+    }
+
+    // Last waiting state the parent acknowledged (dedup), and the generation
+    // that ack covers (suspend eligibility; any new turn invalidates it).
+    let waitingNoticeKey: string | null = null;
+    let waitingNoticeAckGeneration: number | null = null;
+    // One pending retry for an unacked notice. It only re-sends to the parent;
+    // it never starts a model turn.
+    let waitingNoticeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    const WAITING_NOTICE_RETRY_BASE_MS = 3_000;
+    const WAITING_NOTICE_RETRY_MAX_MS = 60_000;
+    const WAITING_NOTICE_MAX_ATTEMPTS = 8; // ~5 min of retries, then the next settle starts over
+
+    const waitingKey = (goal: MetaGoalStatus | null): string | null =>
+        goal?.status === "active" && goal.waiting
+            ? JSON.stringify([goal.id, goal.waiting.reason, goal.waiting.wakeOn, goal.waiting.manual === true])
+            : null;
+
+    function clearWaitingNoticeRetry(): void {
+        if (waitingNoticeRetryTimer !== null) clearTimeout(waitingNoticeRetryTimer);
+        waitingNoticeRetryTimer = null;
+    }
+
+    async function notifyParentWaiting(
+        ctx: any,
+        goal: MetaGoalStatus,
+        summary: string,
+        fullOutputPath: string | undefined,
+        attempt = 1,
+    ): Promise<void> {
+        clearWaitingNoticeRetry();
+        const waiting = goal.waiting!;
+        const generation = state.sessionCompleteGeneration;
+        const key = waitingKey(goal)!;
+        const stillCurrent = () =>
+            state.sessionCompleteGeneration === generation && waitingKey(rctx.goalState) === key && !rctx.shuttingDown;
+        if (key !== waitingNoticeKey) {
+            const message = [
+                `Child goal ${waiting.manual ? "paused" : "waiting"} — NOT complete; do not end this session.`,
+                `Reason: ${waiting.reason}`,
+                `Wakes on: ${waiting.wakeOn}`,
+                `Goal: ${goal.description}`,
+                fullOutputPath ? `Full output: ${fullOutputPath}` : undefined,
+                "",
+                "Latest output:",
+                summary,
+            ].filter((line) => line !== undefined).join("\n");
+            const result = rctx.sioSocket?.connected && rctx.relay
+                ? await sendSessionMessageWithAck(
+                    { socket: rctx.sioSocket, token: rctx.relay.token },
+                    { target: "parent", message, deliverAs: "input" },
+                )
+                : { ok: false, error: "Not connected to relay" };
+            if (!stillCurrent()) return;
+            if (!result.ok) {
+                // No ack → never suspend. Retry while this exact wait is current
+                // (covers relay reconnects); input, a new run, a session
+                // transition, shutdown or a goal change cancels it.
+                const error = result.errors?.map((e) => e.error).join("; ") || result.error || "unknown error";
+                const giveUp = attempt >= WAITING_NOTICE_MAX_ATTEMPTS;
+                log.warn(`pizzapi: goal waiting notice to parent failed (attempt ${attempt}) — ${error}`);
+                if (attempt === 1 || giveUp) {
+                    ctx.ui?.notify?.(
+                        `⚠ Could not tell the parent this goal is waiting: ${error}${giveUp ? " (giving up until the next run)" : " — retrying"}`,
+                        "warning",
+                    );
+                }
+                if (giveUp) return;
+                const delay = Math.min(WAITING_NOTICE_RETRY_BASE_MS * 2 ** (attempt - 1), WAITING_NOTICE_RETRY_MAX_MS);
+                waitingNoticeRetryTimer = setTimeout(() => {
+                    waitingNoticeRetryTimer = null;
+                    if (stillCurrent()) void notifyParentWaiting(ctx, goal, summary, fullOutputPath, attempt + 1);
+                }, delay);
+                (waitingNoticeRetryTimer as any)?.unref?.();
+                return;
+            }
+            waitingNoticeKey = key;
+        }
+        waitingNoticeAckGeneration = generation;
+        followUpGrace.startFollowUpGrace(
+            ctx,
+            canSuspendWorker() ? () => trySuspendIdleChild(ctx) : undefined,
+            "goal waiting (not complete) — parent notified; idle until new input (no auto-shutdown)",
+        );
     }
 
     function handleAgentSettled(_event: any, ctx: any) {
@@ -682,6 +792,20 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             });
 
             const manualAbort = isManualAbort(rctx);
+            // Waiting is not completion: a session_complete would invite the
+            // parent's ack, which ends the child. Tell the parent instead, and
+            // never auto-close. session_error above still fires.
+            const goal = rctx.goalState;
+            if (goal?.status === "active" && goal.waiting) {
+                void sessionErrorPublish.then((fired) => {
+                    if (fired) sessionErrorFired = true;
+                });
+                if (rctx.isChildSession && !manualAbort) {
+                    void notifyParentWaiting(ctx, goal, summary, fullOutputPath);
+                }
+                return;
+            }
+            waitingNoticeKey = null;
             if (rctx.isChildSession && manualAbort) {
                 log.info("pizzapi: turn aborted manually — keeping child session alive");
             } else {

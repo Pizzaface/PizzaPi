@@ -32,9 +32,13 @@ mock.module("../triggers/extension.js", () => ({
 // Mutable capture so tests can inspect the `before` cutoff a given
 // clearTriggerHistory call was invoked with (GM a8yAXXwa round 2).
 const _clearTriggerHistoryCalls: Array<number | undefined> = [];
+const _listTriggerSubscriptionsCalls: string[] = [];
 
 mock.module("../trigger-client.js", () => ({
-    listTriggerSubscriptions: async (_sid: string) => [],
+    listTriggerSubscriptions: async (sid: string) => {
+        _listTriggerSubscriptionsCalls.push(sid);
+        return [];
+    },
     unsubscribeTrigger: async () => ({ ok: true }),
     clearTriggerHistory: async (_sid: string, _deps: unknown, before?: number) => {
         _clearTriggerHistoryCalls.push(before);
@@ -206,7 +210,7 @@ describe("local-TUI transition cleanup parity", () => {
             expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
         });
 
-        test("session_start with reason:resume and reason:fork also clean", () => {
+        test("session_start with reason:resume also cleans; reason:fork does not", () => {
             delete process.env.PIZZAPI_WORKER_CWD;
             const { handlers, state } = makeMinimalDeps();
             const sessionStart = handlers.get("session_start")!;
@@ -226,7 +230,10 @@ describe("local-TUI transition cleanup parity", () => {
             genBefore = state.sessionCompleteGeneration;
 
             sessionStart({ reason: "fork" }, minimalCtx);
-            expect(state.staleChildIds.has("child-fork")).toBe(false);
+            // /rewind keeps the relay session — stale-child bookkeeping untouched,
+            // but session_complete is re-armed for the new branch.
+            expect(state.staleChildIds.has("child-fork")).toBe(true);
+            expect(state.sessionCompleteFired).toBe(false);
             expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
         });
 
@@ -314,7 +321,7 @@ describe("local-TUI transition cleanup parity", () => {
             expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
         });
 
-        test("session_switch with reason:resume and reason:fork also clean (worker/local-TUI parity — GM a8yAXXwa)", () => {
+        test("session_switch with reason:resume cleans; reason:fork does not (worker/local-TUI parity — GM a8yAXXwa)", () => {
             // Regression guard: worker session_switch must clean stale child
             // state on resume/fork exactly like local-TUI session_start does.
             // Before the fix, only reason:"new" ran performSessionTransitionCleanup
@@ -345,11 +352,106 @@ describe("local-TUI transition cleanup parity", () => {
 
             sessionSwitch({ reason: "fork" }, minimalCtx);
 
-            expect(state.staleChildIds.has("child-fork-stale")).toBe(false);
-            expect(state.pendingDelink).toBe(true);
+            expect(state.staleChildIds.has("child-fork-stale")).toBe(true);
+            expect(state.pendingDelink).toBe(false);
             expect(state.sessionCompleteFired).toBe(false);
             expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
         });
+
+        // /rewind (fork) branches the transcript but keeps the relay session
+        // ID, so links keyed by that ID must survive — in both the worker
+        // (session_switch) and local-TUI (session_start) paths.
+        for (const path of ["worker session_switch", "local-TUI session_start"] as const) {
+            test(`${path} reason:fork preserves parent link, children, subscriptions and history`, async () => {
+                const isWorker = path === "worker session_switch";
+                if (isWorker) process.env.PIZZAPI_WORKER_CWD = "/tmp/worker-cwd";
+                else delete process.env.PIZZAPI_WORKER_CWD;
+                const emitDelinkChildren = mock(() => {});
+                const emitDelinkOwnParent = mock(() => {});
+                const { handlers, state, rctx, triggerWaits } = makeMinimalDeps(
+                    {
+                        isChildSession: true,
+                        parentSessionId: "parent-1",
+                        relaySessionId: "self-1",
+                        relay: { sessionId: "self-1", token: "t", shareUrl: "", seq: 0, ackedSeq: 0 } as any,
+                        sioSocket: { connected: true, emit: () => {} } as any,
+                    },
+                    { emitDelinkChildren, emitDelinkOwnParent },
+                );
+                const cancelAllSpy = mock(() => 0);
+                (triggerWaits as any).cancelAll = cancelAllSpy;
+                const sessionStart = handlers.get("session_start")!;
+                const sessionSwitch = handlers.get("session_switch")!;
+
+                sessionStart({ reason: "startup" }, minimalCtx);
+                state.sessionCompleteFired = true;
+                state.lastSessionCompletePayload = { triggerId: "t1", summary: "s", exitReason: "completed" };
+                const genBefore = state.sessionCompleteGeneration;
+                _listTriggerSubscriptionsCalls.length = 0;
+                _clearTriggerHistoryCalls.length = 0;
+
+                if (isWorker) sessionSwitch({ reason: "fork" }, minimalCtx);
+                else sessionStart({ reason: "fork" }, minimalCtx);
+                await Promise.resolve();
+
+                // Active parent link kept.
+                expect(rctx.isChildSession).toBe(true);
+                expect(rctx.parentSessionId).toBe("parent-1");
+                expect(state.pendingDelinkOwnParent).toBe(false);
+                expect(emitDelinkOwnParent).not.toHaveBeenCalled();
+                expect(cancelAllSpy).not.toHaveBeenCalled();
+                // Children not delinked.
+                expect(emitDelinkChildren).not.toHaveBeenCalled();
+                expect(state.pendingDelink).toBe(false);
+                // Trigger subscriptions and history not cleared.
+                expect(_listTriggerSubscriptionsCalls).toEqual([]);
+                expect(_clearTriggerHistoryCalls).toEqual([]);
+                // Session-complete state re-armed for the new branch.
+                expect(state.sessionCompleteFired).toBe(false);
+                expect(state.lastSessionCompletePayload).toBeNull();
+                expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+            });
+
+            test(`${path} reason:new still delinks and clears (control)`, async () => {
+                const isWorker = path === "worker session_switch";
+                if (isWorker) process.env.PIZZAPI_WORKER_CWD = "/tmp/worker-cwd";
+                else delete process.env.PIZZAPI_WORKER_CWD;
+                const emitDelinkChildren = mock(() => {});
+                const emitDelinkOwnParent = mock(() => {});
+                const { handlers, state, rctx } = makeMinimalDeps(
+                    {
+                        isChildSession: true,
+                        parentSessionId: "parent-1",
+                        relaySessionId: "self-1",
+                        relay: { sessionId: "self-1", token: "t", shareUrl: "", seq: 0, ackedSeq: 0 } as any,
+                        sioSocket: { connected: true, emit: () => {} } as any,
+                    },
+                    { emitDelinkChildren, emitDelinkOwnParent },
+                );
+                const sessionStart = handlers.get("session_start")!;
+                const sessionSwitch = handlers.get("session_switch")!;
+
+                sessionStart({ reason: "startup" }, minimalCtx);
+                _listTriggerSubscriptionsCalls.length = 0;
+                _clearTriggerHistoryCalls.length = 0;
+                const savedSend = process.send;
+                process.send = (() => true) as any;
+                try {
+                    if (isWorker) sessionSwitch({ reason: "new" }, minimalCtx);
+                    else sessionStart({ reason: "new" }, minimalCtx);
+                } finally {
+                    process.send = savedSend;
+                }
+                await Promise.resolve();
+
+                expect(rctx.parentSessionId).toBeNull();
+                expect(state.pendingDelink).toBe(true);
+                expect(emitDelinkChildren).toHaveBeenCalledTimes(1);
+                expect(emitDelinkOwnParent).toHaveBeenCalledTimes(1);
+                expect(_listTriggerSubscriptionsCalls).toEqual(["self-1"]);
+                expect(_clearTriggerHistoryCalls.length).toBe(1);
+            });
+        }
 
         // Suspend-wake respawn boot resume (PR #994 P1, live-test finding):
         // initial-prompt.ts tags its boot-time switchSession(resumePath) call

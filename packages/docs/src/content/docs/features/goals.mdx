@@ -22,10 +22,29 @@ Everything `/goal` counts — `--max-turns`, `--every`, `--min-turns` — is mea
 1. You set a goal. The condition is sent to the agent immediately as its first directive.
 2. The agent works — reading, editing, running commands — for as many tool calls as it needs.
 3. When the agent finishes a run, the evaluator checks the condition.
-4. **Not met** → the evaluator's reasoning is fed back and a new run starts automatically.
-5. **Met**, or a budget is exhausted → the goal deactivates and control returns to you.
+4. **Not met, with work to do** → the evaluator's reasoning is fed back and a new run starts automatically.
+5. **Waiting for external input** → the goal stays active, but no continuation prompts are sent.
+6. **Met**, or a budget is exhausted → the goal deactivates and control returns to you.
 
-The loop pauses itself when other work is in flight: if background subagents are running or messages are queued, `/goal` waits rather than talking over them.
+The loop skips continuation while local background subagents are running or messages are queued. For other blocked work, the agent can call `goal_wait` with a `reason` and `wakeOn` (the expected incoming event). The LLM evaluator can also return a `waiting` verdict. The keyword evaluator cannot infer waiting; the agent must use `goal_wait`.
+
+### Waiting and resuming
+
+A waiting goal keeps its condition, counters, and remaining budget. It sends no automatic prompts and makes no evaluator calls while idle. Waiting also applies when `--every` or `--min-turns` would otherwise skip evaluation. The run that requests waiting still counts toward the budget.
+
+Normal incoming user messages, child results, background-job completions, and delivered triggers let the agent reconsider the wait. Any such input can wake it; `wakeOn` describes the expected event, not an event filter. If the agent is still blocked, it can wait again. Unrelated background work alone is not a reason to stop useful work.
+
+`goal_wait` does **not** create a timer or event subscription. Arrange the notification before waiting. For a timed retry, use an explicit scheduled trigger. If no automatic notification is available, the agent should ask for the user input it needs.
+
+Use `/goal resume` to retry manually without resetting the goal or budget. `/goal clear` cancels it. Waiting survives a session reload and appears in `/goal status`, the TUI status bar, and the web goal badge.
+
+### Manual pause
+
+`/goal pause` stops automatic continuation until you use `/goal resume`. Unlike `goal_wait`, a manual pause is **not** cleared by incoming messages or triggers. You can ask the agent to do other work without restarting the goal loop.
+
+Pausing does not abort the current response or running tools. The goal keeps its condition and counters, and work while paused still counts toward its budget. A manual pause survives reload. The web badge and TUI show **paused** rather than **waiting**.
+
+A waiting or paused child session tells its parent that it is not complete. It is not automatically closed as completed; it can still suspend when the existing idle-safety checks allow it.
 
 <Aside type="caution" title="/goal never ends your session">
 Reaching the goal (or a budget) only **deactivates the goal**. The session stays open, your context is intact, and you can keep working or set a new goal. Nothing is terminated and no stop hooks fire.
@@ -100,6 +119,8 @@ Budget values must be greater than zero. Text that isn't a recognized flag is tr
 |---------|--------|
 | `/goal` or `/goal status` | Show the active goal, counters, and budget |
 | `/goal clear` | Cancel the active goal (aliases: `stop`, `off`, `cancel`, `reset`, `none`) |
+| `/goal pause` | Pause automatic continuation until an explicit resume; running work is not interrupted |
+| `/goal resume` | Resume a waiting or manually paused goal without resetting its counters or budget |
 
 An active goal appears in the TUI status bar and as a badge in the web UI session header, showing the completed run count (against `--max-turns` if set) and the latest evaluator reason.
 

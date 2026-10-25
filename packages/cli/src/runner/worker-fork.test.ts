@@ -76,15 +76,21 @@ describe("headlessFork", () => {
     test("session_before_fork can cancel", async () => {
         const { sm, session, secondUserId } = buildSession();
         const originalSessionId = sm.getSessionId();
+        const emitted: any[] = [];
         session.extensionRunner = {
             hasHandlers: () => true,
-            emit: async () => ({ cancel: true }),
+            emit: async (event: any) => {
+                emitted.push(event);
+                return { cancel: true };
+            },
         };
 
         const result = await headlessFork(session, secondUserId);
 
         expect(result.cancelled).toBe(true);
         expect(sm.getSessionId()).toBe(originalSessionId);
+        // A cancelled rewind must not reach the remote lifecycle handlers at all.
+        expect(emitted.map((e) => e.type)).toEqual(["session_before_fork"]);
     });
 
     test("rejects non-user entries and unknown ids", async () => {
