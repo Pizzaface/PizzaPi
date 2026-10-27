@@ -57,11 +57,11 @@
     "@capacitor/push-notifications": "^8.1.1",
     "@capawesome/capacitor-badge": "^8.0.2",
     "@capgo/capacitor-updater": "^8",
-    "@earendil-works/pi-agent-core": "1.2.0",
-    "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-coding-agent": "1.2.0",
-    "@earendil-works/pi-codemode": "1.2.0",
-    "@earendil-works/pi-tui": "1.2.0",
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-codemode": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
     "quickjs-wasi": "3.6.2",
     "motion": "^12.34.2",
     "pizzapi": "."
@@ -79,18 +79,18 @@
   "version": "",
   "patchedDependencies": {
     "pptx-browser@4.1.5": "patches/pptx-browser@4.1.5.patch",
-    "@earendil-works/pi-coding-agent@1.2.0": "patches/@earendil-works%2Fpi-coding-agent@1.2.0.patch",
-    "@earendil-works/pi-agent-core@1.2.0": "patches/@earendil-works%2Fpi-agent-core@1.2.0.patch",
-    "@earendil-works/pi-ai@1.2.0": "patches/@earendil-works%2Fpi-ai@1.2.0.patch",
-    "@earendil-works/pi-tui@1.2.0": "patches/@earendil-works%2Fpi-tui@1.2.0.patch"
+    "@earendil-works/pi-coding-agent@1.4.0": "patches/@earendil-works%2Fpi-coding-agent@1.4.0.patch",
+    "@earendil-works/pi-agent-core@1.4.0": "patches/@earendil-works%2Fpi-agent-core@1.4.0.patch",
+    "@earendil-works/pi-ai@1.4.0": "patches/@earendil-works%2Fpi-ai@1.4.0.patch",
+    "@earendil-works/pi-tui@1.4.0": "patches/@earendil-works%2Fpi-tui@1.4.0.patch"
   },
   "overrides": {
-    "@earendil-works/pi-agent-core": "1.2.0",
-    "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-codemode": "1.2.0",
-    "@earendil-works/pi-coding-agent": "1.2.0",
-    "@earendil-works/pi-mcp": "1.2.0",
-    "@earendil-works/pi-telemetry": "1.2.0",
-    "@earendil-works/pi-tui": "1.2.0"
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-codemode": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-mcp": "1.4.0",
+    "@earendil-works/pi-telemetry": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0"
   }
 }

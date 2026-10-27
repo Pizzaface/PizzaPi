@@ -33,10 +33,10 @@ index 62eb303..6aa5b50 100644
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index c16f5da..b8f47e7 100644
+index 8728a3e..0834259 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -1695,29 +1695,46 @@ export class AgentSession {
+@@ -1725,29 +1725,46 @@ export class AgentSession {
       * Emits errors via extension runner if file read fails.
       */
      _expandSkillCommand(text) {
@@ -107,19 +107,19 @@ index c16f5da..b8f47e7 100644
      async _queueUserInput(text, images, behavior, source) {
          if (text.startsWith("/")) {
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 7543601..987e41c 100644
+index 47a9ba9..e8b99a9 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -21,6 +21,7 @@ export const defaultModelPerProvider = {
      "google-vertex": "gemini-3.1-pro-preview",
-     "github-copilot": "gpt-5.4",
+     "github-copilot": "gpt-6.1-sol",
      openrouter: "moonshotai/kimi-k2.6",
 +    "ollama-cloud": "glm-5.1",
      "vercel-ai-gateway": "zai/glm-5.1",
      xai: "grok-4.7",
      groq: "openai/gpt-oss-120b",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index 835de97..45df4d4 100644
+index b54a221..2624798 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
 @@ -25,6 +25,51 @@ export class CredentialSynchronizationError extends Error {
@@ -184,10 +184,10 @@ index 835de97..45df4d4 100644
          if (!this.config.getProvider(providerId) && !extension) {
              // No overlays: use the builtin untouched so its auth/login/stream behavior is exact.
 diff --git a/dist/core/settings-manager.js b/dist/core/settings-manager.js
-index 392823f..259abff 100644
+index d5ce9cd..fb25dc5 100644
 --- a/dist/core/settings-manager.js
 +++ b/dist/core/settings-manager.js
-@@ -756,7 +756,14 @@ export class SettingsManager {
+@@ -767,7 +767,14 @@ export class SettingsManager {
          this.save();
      }
      getQuietStartup() {
@@ -203,7 +203,7 @@ index 392823f..259abff 100644
      }
      setQuietStartup(quiet) {
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 4a4e958..683f720 100644
+index 3821d9f..7e5ac0a 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -15,6 +15,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
@@ -215,7 +215,7 @@ index 4a4e958..683f720 100644
  export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
  export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createPowerShellTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
 diff --git a/dist/index.js b/dist/index.js
-index c48934f..4adfbc1 100644
+index ab5cfcc..a488d0a 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -13,6 +13,7 @@ export { ModelRegistry } from "./core/model-registry.js";
@@ -227,7 +227,7 @@ index c48934f..4adfbc1 100644
  // SDK for programmatic usage
  export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 6a5b925..6983e62 100644
+index 5303aad..80b7caf 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -835,12 +835,6 @@ export class InteractiveMode {
@@ -243,7 +243,7 @@ index 6a5b925..6983e62 100644
          // Start package update check asynchronously
          this.checkForPackageUpdates()
              .then((updates) => {
-@@ -3801,34 +3795,10 @@ export class InteractiveMode {
+@@ -3762,34 +3756,10 @@ export class InteractiveMode {
          this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -280,7 +280,7 @@ index 6a5b925..6983e62 100644
          const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
          this.chatContainer.addChild(new Spacer(1));
          this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
-@@ -3872,6 +3842,12 @@ export class InteractiveMode {
+@@ -3833,6 +3803,12 @@ export class InteractiveMode {
      }
      updatePendingMessagesDisplay() {
          this.pendingMessagesContainer.clear();

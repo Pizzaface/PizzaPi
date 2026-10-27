@@ -10,8 +10,8 @@
     },
     "dependencies": {
         "@anthropic-ai/sandbox-runtime": "0.0.41",
-        "@earendil-works/pi-agent-core": "1.2.0",
-        "@earendil-works/pi-ai": "1.2.0"
+        "@earendil-works/pi-agent-core": "1.4.0",
+        "@earendil-works/pi-ai": "1.4.0"
     },
     "devDependencies": {
         "typescript": "^5.7.0"
