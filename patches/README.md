@@ -4,9 +4,9 @@ Patches in this directory are applied by Bun through the root
 `patchedDependencies` field in `package.json`. They are reapplied on every
 `bun install`; there is no postinstall patch script.
 
-## Current patch inventory (Pi 1.2.0)
+## Current patch inventory (Pi 1.4.0)
 
-### `@earendil-works/pi-agent-core@1.2.0`
+### `@earendil-works/pi-agent-core@1.4.0`
 
 Keeps PizzaPi's dynamic tool/prompt refresh behavior.
 
@@ -18,7 +18,7 @@ PizzaPi state but absent from the next provider request's transcript. The patch
 also keeps `llmContext.tools = context.tools` for compatibility with custom
 stream functions that still inspect `context.tools` directly.
 
-### `@earendil-works/pi-ai@1.2.0`
+### `@earendil-works/pi-ai@1.4.0`
 
 Preserves PizzaPi's provider-runtime behavior not present upstream:
 
@@ -36,9 +36,9 @@ Preserves PizzaPi's provider-runtime behavior not present upstream:
 - Retry classification treats transient JSON parse / unexpected-end errors as
   retryable stream truncation failures.
 
-Upstream 1.2.0 still does not include these PizzaPi hooks.
+Upstream 1.4.0 still does not include these PizzaPi hooks.
 
-### `@earendil-works/pi-coding-agent@1.2.0`
+### `@earendil-works/pi-coding-agent@1.4.0`
 
 Preserves PizzaPi integration behavior:
 
@@ -55,12 +55,12 @@ Preserves PizzaPi integration behavior:
 OpenAI context override note: the actual patch applies to both `openai` and
 `openai-codex`. Do not regress this to direct OpenAI only.
 
-### `@earendil-works/pi-tui@1.2.0`
+### `@earendil-works/pi-tui@1.4.0`
 
 Adds a best-effort Windows console lifecycle in `dist/terminal.js`:
 `createWindowsConsoleLifecycle()`, `ProcessTerminal.setupWindowsConsole()`,
 `globalThis.__PI_WINDOWS_CONSOLE_CAPS__`, and restore-on-stop wiring. This keeps
-PizzaPi's downstream Windows rendering capability signal stable. The 1.2.0 port
+PizzaPi's downstream Windows rendering capability signal stable. The 1.4.0 port
 currently preserves the existing no-op off-Windows implementation.
 
 ### `pptx-browser@4.1.5`

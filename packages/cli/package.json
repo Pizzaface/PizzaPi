@@ -29,8 +29,8 @@
     "build:binaries": "bun build-binaries.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@pizzapi/extension-sdk": "workspace:*",
     "@pizzapi/protocol": "workspace:*",
