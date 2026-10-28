@@ -15,9 +15,13 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
   const reply = result => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:m.id, result }) + '\\n');
   if (m.method === 'server/discover') {
     if (process.env.TEST_LEGACY === 'ignore') return;
+    // Dual-era server that starts slowly: discover arrives first, so it locks
+    // the connection to modern and rejects the late legacy initialize.
+    if (process.env.TEST_LEGACY === 'slow') { globalThis.era = 'modern'; return setTimeout(() => reply({ supportedVersions:['2026-07-28'] }), 1500); }
     if (process.env.TEST_LEGACY === 'yes') return process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:m.id, error:{code:-32601,message:'Unknown method'} }) + '\\n');
     return reply({ supportedVersions:['2026-07-28'] });
   }
+  if (m.method === 'initialize' && globalThis.era === 'modern') return process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:m.id, error:{code:-32022,message:'connection is serving the 2026-07-28 protocol'} }) + '\\n');
   if (m.method === 'initialize') return reply({protocolVersion:'2025-03-26'});
   if (m.method === 'tools/call' && !process.env.TEST_LEGACY && !m.params.inputResponses) {
     process.stdout.write(JSON.stringify({jsonrpc:'2.0', id:m.id, method:'elicitation/create', params:{}}) + '\\n');
@@ -47,6 +51,16 @@ test.each(["", "yes", "ignore"])("stdio discovers modern or falls back to legacy
       expect(calls[1].params.requestState).toBe("opaque");
       expect(calls[0].params._meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({ elicitation: { form: {}, url: {} } });
     }
+  } finally { client.close(); }
+});
+
+test("slow dual-era server still negotiates modern after the discovery window", async () => {
+  const client = await createStdioMcpClient({ name: "fixture", command: process.execPath, args: ["--eval", script], env: { TEST_LEGACY: "slow" } });
+  try {
+    const result = await client.callTool("ask", {});
+    const trace = JSON.parse((result.content as { text: string }[])[0].text);
+    expect(trace.requests.some((r: any) => r.method === "initialize")).toBe(true); // legacy was tried after 1s
+    expect(trace.requests.find((r: any) => r.method === "tools/call").params._meta).toBeDefined();
   } finally { client.close(); }
 });
 
