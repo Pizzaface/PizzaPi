@@ -287,13 +287,15 @@ PizzaPi searches for plugins in these directories:
 |-----------|--------|
 | `~/.pizzapi/plugins/` | PizzaPi's own plugin directory |
 | `~/.agents/plugins/` | Agent Skills standard directory |
-| `~/.claude/plugins/` | Claude Code marketplace cache — discovered via `installed_plugins.json` + `enabledPlugins` from Claude Code settings |
+| `~/.pizzapi/marketplace/` | PizzaPi marketplace installs (`/plugin install`, `pizza plugins install`) — discovered via its `installed_plugins.json` + `settings.json` |
+| `~/.claude/plugins/` | Claude Code marketplace cache (read-only) — discovered via `installed_plugins.json` + `enabledPlugins` from Claude Code settings |
 
 A plugin folder placed directly in `~/.claude/plugins/` without a matching `installed_plugins.json` entry will **not** be discovered.
 
-`enabledPlugins` is read from `~/.claude/settings.json`, then `<cwd>/.claude/settings.json`, then
+`enabledPlugins` is read from `~/.claude/settings.json`, then `~/.pizzapi/marketplace/settings.json`
+(where `pizza plugins enable|disable` writes), then `<cwd>/.claude/settings.json`, then
 `<cwd>/.claude/settings.local.json`. Project files may disable a plugin, but they **cannot re-enable**
-a plugin that `~/.claude/settings.json` sets to `false`. Repository-controlled settings must not turn
+a plugin that a user-level settings file sets to `false`. Repository-controlled settings must not turn
 your globally disabled plugin's hooks or MCP servers back on. To use the plugin again, enable it in
 user-level settings with `pizza plugins enable`.
 
@@ -301,8 +303,9 @@ user-level settings with `pizza plugins enable`.
 
 ## Marketplaces
 
-PizzaPi can add marketplaces and install plugins itself, writing to the same files Claude Code
-uses — so an install made from either tool is visible to both.
+PizzaPi can add marketplaces and install plugins itself. It uses Claude Code's file formats but
+writes only under `~/.pizzapi/marketplace/` — never into `~/.claude`. Plugins installed by Claude
+Code are still discovered.
 
 ### From a session
 

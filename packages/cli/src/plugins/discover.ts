@@ -8,6 +8,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { expandHome } from "../config.js";
 import { MAX_ENTRIES_PER_DIR, type ClaudeInstalledPluginEntry, type DiscoveredPlugin } from "./types.js";
 import { isPluginDir, parsePlugin } from "./parse.js";
+import { installedPluginsPath, pluginSettingsPath } from "./marketplace.js";
 
 // ── Discovery locations ───────────────────────────────────────────────────────
 
@@ -77,9 +78,10 @@ export function pluginSearchDirs(cwd?: string, opts?: { includeProjectLocal?: bo
  * Read `enabledPlugins` from Claude Code settings files and merge them.
  *
  * Checks (in precedence order, higher wins):
- *   1. ~/.claude/settings.json (user-level)
- *   2. .claude/settings.json (project-level, relative to cwd)
- *   3. .claude/settings.local.json (project-local overrides)
+ *   1. ~/.claude/settings.json (user-level, Claude Code)
+ *   2. ~/.pizzapi/marketplace/settings.json (user-level, written by PizzaPi)
+ *   3. .claude/settings.json (project-level, relative to cwd)
+ *   4. .claude/settings.local.json (project-local overrides)
  *
  * Security: a user-level `false` is authoritative. Project files are
  * repository-controlled, and installed plugins are treated as globally trusted
@@ -93,7 +95,9 @@ export function readEnabledPlugins(cwd?: string): Record<string, boolean> | null
     const home = process.env.HOME || homedir();
     const candidates: string[] = [
         join(home, ".claude", "settings.json"),
+        pluginSettingsPath(),
     ];
+    const userLevelCount = candidates.length;
     if (cwd) {
         candidates.push(join(cwd, ".claude", "settings.json"));
         candidates.push(join(cwd, ".claude", "settings.local.json"));
@@ -105,7 +109,7 @@ export function readEnabledPlugins(cwd?: string): Record<string, boolean> | null
     const globallyDisabled = new Set<string>();
 
     for (const [index, path] of candidates.entries()) {
-        const isUserLevel = index === 0;
+        const isUserLevel = index < userLevelCount;
         if (!existsSync(path)) continue;
         try {
             const raw = readFileSync(path, "utf-8");
@@ -146,7 +150,8 @@ function isPluginEnabled(key: string, enabledPlugins: Record<string, boolean> | 
 /**
  * Discover plugins installed via Claude Code's marketplace system.
  *
- * Reads ~/.claude/plugins/installed_plugins.json and parses each plugin
+ * Reads ~/.pizzapi/marketplace/installed_plugins.json (PizzaPi installs) and
+ * ~/.claude/plugins/installed_plugins.json (Claude Code installs), parsing each plugin
  * from its cached installPath. Only returns plugins whose installPath
  * actually exists on disk.
  *
@@ -163,33 +168,28 @@ export function discoverClaudeInstalledPlugins(cwd?: string): DiscoveredPlugin[]
     // Use process.env.HOME directly (not homedir()) so tests can override it.
     // homedir() caches the value at process start and ignores env changes.
     const home = process.env.HOME || homedir();
-    const installedPath = join(home, ".claude", "plugins", "installed_plugins.json");
+    // PizzaPi's own installs first so they win name collisions.
+    const manifests = [installedPluginsPath(), join(home, ".claude", "plugins", "installed_plugins.json")];
 
-    if (!existsSync(installedPath)) return [];
-
-    let raw: string;
-    try {
-        raw = readFileSync(installedPath, "utf-8");
-    } catch {
-        return [];
+    const entries: Array<[string, ClaudeInstalledPluginEntry[]]> = [];
+    for (const installedPath of manifests) {
+        if (!existsSync(installedPath)) continue;
+        try {
+            const data = JSON.parse(readFileSync(installedPath, "utf-8")) as { plugins?: Record<string, ClaudeInstalledPluginEntry[]> };
+            if (data.plugins && typeof data.plugins === "object") entries.push(...Object.entries(data.plugins));
+        } catch {
+            // Skip unreadable/unparseable manifests
+        }
     }
+    if (entries.length === 0) return [];
 
-    let data: { version?: number; plugins?: Record<string, ClaudeInstalledPluginEntry[]> };
-    try {
-        data = JSON.parse(raw);
-    } catch {
-        return [];
-    }
-
-    if (!data.plugins || typeof data.plugins !== "object") return [];
-
-    // Read enabledPlugins from Claude Code settings to respect disabled state
+    // Read enabledPlugins from settings to respect disabled state
     const enabledPlugins = readEnabledPlugins(cwd);
 
     const plugins: DiscoveredPlugin[] = [];
     const seen = new Set<string>();
 
-    for (const [_key, installations] of Object.entries(data.plugins)) {
+    for (const [_key, installations] of entries) {
         // Check enabledPlugins — skip plugins explicitly disabled
         if (!isPluginEnabled(_key, enabledPlugins)) continue;
 
@@ -295,7 +295,7 @@ export function scanPluginsDir(dir: string): DiscoveredPlugin[] {
  *
  * Discovery sources (in precedence order):
  * 1. PizzaPi plugin dirs (~/.pizzapi/plugins/, ~/.agents/plugins/)
- * 2. Claude Code installed plugins (from ~/.claude/plugins/installed_plugins.json)
+ * 2. Marketplace installs (~/.pizzapi/marketplace/ and ~/.claude/plugins/installed_plugins.json)
  * 3. Project-local plugin dirs (if opts.includeProjectLocal)
  * 4. Extra dirs (if opts.extraDirs)
  *
