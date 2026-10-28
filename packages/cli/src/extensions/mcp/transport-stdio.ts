@@ -169,32 +169,44 @@ export async function createStdioMcpClient(opts: {
   function ensureInitialized(signal?: AbortSignal): Promise<void> {
     if (!initPromise) initPromise = (async () => {
       const probe = new AbortController();
-      // Legacy servers may silently ignore unknown methods. Bound discovery so
-      // they still get their initialize request within the registration timeout.
-      const timer = setTimeout(() => probe.abort(), 1000);
-      try {
-        const discovered = await request("server/discover", modernParams(), signal ? AbortSignal.any([signal, probe.signal]) : probe.signal);
-        if (isRecord(discovered) && Array.isArray(discovered.supportedVersions)) {
-          if (!discovered.supportedVersions.includes(MCP_MODERN_PROTOCOL_VERSION)) {
-            throw Object.assign(new Error(`MCP server "${opts.name}" does not support ${MCP_MODERN_PROTOCOL_VERSION}`), { code: -32022 });
-          }
-          modern = true;
-          return;
+      // Resolves true (modern), false (not modern: fall back), or rejects on a modern-era error.
+      const discovered = request("server/discover", modernParams(), signal ? AbortSignal.any([signal, probe.signal]) : probe.signal).then(d => {
+        if (!isRecord(d) || !Array.isArray(d.supportedVersions)) return false;
+        if (!d.supportedVersions.includes(MCP_MODERN_PROTOCOL_VERSION)) {
+          throw Object.assign(new Error(`MCP server "${opts.name}" does not support ${MCP_MODERN_PROTOCOL_VERSION}`), { code: -32022 });
         }
-      } catch (err) {
+        return true;
+      }, err => {
         const code = (err as { code?: number }).code;
         if (signal?.aborted || lifetime.signal.aborted || (typeof code === "number" && MCP_MODERN_ERROR_CODES.has(code))) throw err;
-      } finally {
-        clearTimeout(timer);
-      }
+        return false;
+      });
 
-      const result = await request("initialize", { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: MCP_CLIENT_INFO }, signal);
-      if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
-        throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
-      }
-      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      // Legacy servers may silently ignore unknown methods, so after 1s also
+      // send initialize. Discovery stays pending: a slow-starting dual-era
+      // server locks to modern on the first request and rejects initialize.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const first = await Promise.race([discovered, new Promise<"late">(r => { timer = setTimeout(r, 1000, "late"); })])
+        .finally(() => clearTimeout(timer));
+      if (first === true) { modern = true; return; }
+      const legacy = legacyInitialize(signal);
+      if (first === false) return legacy;
+      const era = await Promise.any([
+        discovered.then(ok => ok ? "modern" as const : Promise.reject(new Error("not modern"))),
+        legacy.then(() => "legacy" as const),
+      ]).catch((e: AggregateError) => { throw e.errors[1]; });
+      if (era === "modern") modern = true;
+      else probe.abort();
     })();
     return initPromise;
+  }
+
+  async function legacyInitialize(signal?: AbortSignal) {
+    const result = await request("initialize", { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: MCP_CLIENT_INFO }, signal);
+    if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
+      throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+    }
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
   }
 
   return {
