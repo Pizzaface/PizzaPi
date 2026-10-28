@@ -18,6 +18,7 @@ import {
     setPluginEnabled,
     uninstallPlugin,
 } from "./marketplace.js";
+import { discoverClaudeInstalledPlugins } from "./discover.js";
 
 let home: string;
 let originalHome: string | undefined;
@@ -205,18 +206,28 @@ describe("installPlugin", () => {
         addMarketplace(sourceRepo, { name: "demo" });
         const result = installPlugin("demo-plugin@demo");
 
-        expect(result.installPath).toContain(join("plugins", "cache", "demo", "demo-plugin"));
+        expect(result.installPath).toBe(join(home, ".pizzapi", "marketplace", "cache", "demo", "demo-plugin"));
+        expect(existsSync(join(home, ".claude"))).toBe(false);
         expect(existsSync(join(result.installPath, ".claude-plugin", "plugin.json"))).toBe(true);
 
         const installed = JSON.parse(readFileSync(installedPluginsPath(), "utf-8"));
         expect(installed.plugins["demo-plugin@demo"][0].installPath).toBe(result.installPath);
 
-        const settings = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf-8"));
+        const settings = JSON.parse(readFileSync(join(home, ".pizzapi", "marketplace", "settings.json"), "utf-8"));
         expect(settings.enabledPlugins["demo-plugin@demo"]).toBe(true);
 
         expect(listInstalledPlugins()).toEqual([
             { key: "demo-plugin@demo", installPath: result.installPath, enabled: true },
         ]);
+    });
+
+    test("installed plugins are discovered from ~/.pizzapi", () => {
+        addMarketplace(sourceRepo, { name: "demo" });
+        installPlugin("demo-plugin@demo");
+        const found = discoverClaudeInstalledPlugins();
+        expect(found.map((p) => p.enableKey)).toEqual(["demo-plugin@demo"]);
+        setPluginEnabled("demo-plugin@demo", false);
+        expect(discoverClaudeInstalledPlugins()).toEqual([]);
     });
 
     test("resolves a bare plugin name to its only marketplace", () => {
@@ -241,7 +252,7 @@ describe("uninstallPlugin", () => {
         expect(existsSync(installPath)).toBe(false);
         expect(listInstalledPlugins()).toEqual([]);
 
-        const settings = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf-8"));
+        const settings = JSON.parse(readFileSync(join(home, ".pizzapi", "marketplace", "settings.json"), "utf-8"));
         expect(settings.enabledPlugins["demo-plugin@demo"]).toBeUndefined();
     });
 
@@ -253,16 +264,16 @@ describe("uninstallPlugin", () => {
 
 describe("setPluginEnabled", () => {
     test("toggles enabledPlugins without dropping other settings", () => {
-        mkdirSync(join(home, ".claude"), { recursive: true });
-        writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "sonnet" }));
+        mkdirSync(join(home, ".pizzapi", "marketplace"), { recursive: true });
+        writeFileSync(join(home, ".pizzapi", "marketplace", "settings.json"), JSON.stringify({ model: "sonnet" }));
 
         setPluginEnabled("x@y", false);
-        const settings = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf-8"));
+        const settings = JSON.parse(readFileSync(join(home, ".pizzapi", "marketplace", "settings.json"), "utf-8"));
         expect(settings.model).toBe("sonnet");
         expect(settings.enabledPlugins["x@y"]).toBe(false);
 
         setPluginEnabled("x@y", true);
-        expect(JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf-8")).enabledPlugins["x@y"]).toBe(true);
+        expect(JSON.parse(readFileSync(join(home, ".pizzapi", "marketplace", "settings.json"), "utf-8")).enabledPlugins["x@y"]).toBe(true);
     });
 
     test("installed-but-disabled plugins report enabled: false", () => {

@@ -186,7 +186,7 @@ The CLI includes a **plugin adapter** that discovers Claude Code plugins and map
 - **Hooks** (`hooks/hooks.json`) → pi lifecycle events (`tool_call`, `tool_result`, `input`, etc.)
 - **Skills** (`skills/*/SKILL.md`) → pi skills (loaded via the Agent Skills standard)
 
-The adapter scans global dirs (`~/.pizzapi/plugins/` and `~/.agents/plugins/`) and reads Claude Code's `~/.claude/plugins/installed_plugins.json` manifest. Project-local plugins require explicit trust — managed via `pizza plugins trust` or interactive confirmation at session start.
+The adapter scans global dirs (`~/.pizzapi/plugins/` and `~/.agents/plugins/`) and reads the `installed_plugins.json` manifests in `~/.pizzapi/marketplace/` (PizzaPi installs) and `~/.claude/plugins/` (Claude Code installs). Project-local plugins require explicit trust — managed via `pizza plugins trust` or interactive confirmation at session start.
 
 See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for full details.
 

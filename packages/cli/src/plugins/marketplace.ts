@@ -1,16 +1,15 @@
 /**
  * Claude Code marketplace write-side.
  *
- * `discover.ts` already *reads* Claude Code's marketplace state; this module
- * adds the missing writes so `/plugin marketplace add …` and `pizza plugins
- * install …` work. All state stays in Claude Code's own files so the two tools
- * can share an install:
+ * Backs `/plugin marketplace add …` and `pizza plugins install …`. State uses
+ * Claude Code's file formats but lives under ~/.pizzapi so PizzaPi never
+ * writes into ~/.claude (discover.ts still *reads* Claude Code's installs):
  *
- *   ~/.claude/plugins/known_marketplaces.json   marketplace name → source + installLocation
- *   ~/.claude/plugins/marketplaces/<name>/      cloned marketplace repo
- *   ~/.claude/plugins/cache/<mkt>/<plugin>/     installed plugin payloads
- *   ~/.claude/plugins/installed_plugins.json    "<plugin>@<mkt>" → installations[]
- *   ~/.claude/settings.json  enabledPlugins     "<plugin>@<mkt>" → boolean
+ *   ~/.pizzapi/marketplace/known_marketplaces.json   marketplace name → source + installLocation
+ *   ~/.pizzapi/marketplace/marketplaces/<name>/      cloned marketplace repo
+ *   ~/.pizzapi/marketplace/cache/<mkt>/<plugin>/     installed plugin payloads
+ *   ~/.pizzapi/marketplace/installed_plugins.json    "<plugin>@<mkt>" → installations[]
+ *   ~/.pizzapi/marketplace/settings.json  enabledPlugins  "<plugin>@<mkt>" → boolean
  */
 
 import { execFileSync } from "node:child_process";
@@ -21,12 +20,8 @@ import type { ClaudeInstalledPluginEntry } from "./types.js";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-function claudeHome(): string {
-    return join(process.env.HOME || homedir(), ".claude");
-}
-
 export function pluginsRoot(): string {
-    return join(claudeHome(), "plugins");
+    return join(process.env.HOME || homedir(), ".pizzapi", "marketplace");
 }
 
 export function knownMarketplacesPath(): string {
@@ -45,8 +40,9 @@ export function pluginCacheDir(): string {
     return join(pluginsRoot(), "cache");
 }
 
-function claudeSettingsPath(): string {
-    return join(claudeHome(), "settings.json");
+/** PizzaPi's `enabledPlugins` store (same shape as Claude Code's settings.json). */
+export function pluginSettingsPath(): string {
+    return join(pluginsRoot(), "settings.json");
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -397,10 +393,10 @@ export function uninstallPlugin(spec: string): boolean {
     delete installed.plugins![key];
     writeJson(installedPluginsPath(), installed);
 
-    const settings = readJson<Record<string, any>>(claudeSettingsPath(), {});
+    const settings = readJson<Record<string, any>>(pluginSettingsPath(), {});
     if (settings.enabledPlugins && key in settings.enabledPlugins) {
         delete settings.enabledPlugins[key];
-        writeJson(claudeSettingsPath(), settings);
+        writeJson(pluginSettingsPath(), settings);
     }
     return true;
 }
@@ -408,7 +404,7 @@ export function uninstallPlugin(spec: string): boolean {
 /** List installed plugin keys ("name@marketplace") with their enabled state. */
 export function listInstalledPlugins(): Array<{ key: string; installPath: string; enabled: boolean }> {
     const installed = readJson<{ plugins?: Record<string, ClaudeInstalledPluginEntry[]> }>(installedPluginsPath(), {});
-    const settings = readJson<{ enabledPlugins?: Record<string, boolean> }>(claudeSettingsPath(), {});
+    const settings = readJson<{ enabledPlugins?: Record<string, boolean> }>(pluginSettingsPath(), {});
     const out: Array<{ key: string; installPath: string; enabled: boolean }> = [];
     for (const [key, entries] of Object.entries(installed.plugins ?? {})) {
         const first = Array.isArray(entries) ? entries[0] : undefined;
@@ -418,11 +414,11 @@ export function listInstalledPlugins(): Array<{ key: string; installPath: string
     return out;
 }
 
-/** Flip a plugin's `enabledPlugins` entry in ~/.claude/settings.json. */
+/** Flip a plugin's `enabledPlugins` entry in ~/.pizzapi/marketplace/settings.json. */
 export function setPluginEnabled(key: string, enabled: boolean): void {
-    const settings = readJson<Record<string, any>>(claudeSettingsPath(), {});
+    const settings = readJson<Record<string, any>>(pluginSettingsPath(), {});
     settings.enabledPlugins = { ...(settings.enabledPlugins), [key]: enabled };
-    writeJson(claudeSettingsPath(), settings);
+    writeJson(pluginSettingsPath(), settings);
 }
 
 /** Resolve a user-supplied plugin spec to its "name@marketplace" key. */

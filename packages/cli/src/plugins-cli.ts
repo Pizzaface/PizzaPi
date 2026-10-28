@@ -298,7 +298,7 @@ function showHelp(): void {
     log.info(`  ${c.cmd("pizza plugins enable|disable")} ${c.dim("<name[@marketplace]>")}`);
     log.info(`  ${c.cmd("pizza plugins installed")}       Show marketplace-installed plugins`);
     log.info("");
-    log.info(c.dim("Marketplace state is shared with Claude Code (~/.claude/plugins)."));
+    log.info(c.dim("Marketplace installs live in ~/.pizzapi/marketplace/ (Claude Code installs are also read)."));
     log.info("");
     log.info(c.dim("Trusted plugins auto-load without prompting. Global plugins"));
     log.info(c.dim("(~/.pizzapi/plugins/, ~/.agents/plugins/, ~/.claude/plugins/) are"));
