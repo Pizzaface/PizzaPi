@@ -437,6 +437,57 @@ describe("/goal multi-turn integration", () => {
         ]) expect(parseLlmVerdict(JSON.stringify(verdict)).verdict).toBe("uncertain");
     });
 
+    test("goal_wait is only active while a goal is active", async () => {
+        const { pi, commands } = createFakePi();
+        let active = ["bash"];
+        (pi as any).getActiveTools = () => active;
+        (pi as any).setActiveTools = (names: string[]) => { active = names; };
+        const ctx = createFakeCtx({ cwd: tmpCwd });
+        goalExtension(pi);
+
+        await commands.get("goal")!('"tests pass" --evaluator keyword --keyword "tests pass"', ctx as ExtensionCommandContext);
+        expect(active).toEqual(["bash", "goal_wait"]);
+
+        await commands.get("goal")!("clear", ctx as ExtensionCommandContext);
+        expect(active).toEqual(["bash"]);
+    });
+
+    test("manual compaction resumes an active goal once the session is idle", async () => {
+        const { pi, handlers, commands, userMessages } = createFakePi();
+        let idle = true;
+        let pending = false;
+        const ctx = Object.assign(createFakeCtx({ cwd: tmpCwd }), {
+            isIdle: () => idle,
+            hasPendingMessages: () => pending,
+        });
+        goalExtension(pi);
+        await commands.get("goal")!('"tests pass" --evaluator keyword --keyword "tests pass"', ctx as ExtensionCommandContext);
+        const compact = async () => {
+            for (const h of handlers.get("session_compact") ?? []) await h({ type: "session_compact" }, ctx);
+            await new Promise((r) => setTimeout(r, 5));
+        };
+
+        userMessages.length = 0;
+        await compact();
+        expect(userMessages).toHaveLength(1);
+        expect(userMessages[0]!.content).toContain("tests pass");
+
+        // Mid-run or already-queued continuation: don't double-nudge.
+        userMessages.length = 0;
+        idle = false;
+        await compact();
+        idle = true;
+        pending = true;
+        await compact();
+        expect(userMessages).toHaveLength(0);
+
+        // Waiting goals stay waiting.
+        pending = false;
+        await commands.get("goal")!("pause", ctx as ExtensionCommandContext);
+        await compact();
+        expect(userMessages).toHaveLength(0);
+    });
+
     test("keyword evaluator loop: unmet → guidance → agent acts → goal cleared", async () => {
         const { pi, handlers, messages, entries, events, commands, userMessages } = createFakePi();
         const shutdown = mock(() => {});

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { cleanup, render } from "@testing-library/react";
 import * as React from "react";
@@ -13,6 +13,7 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).Element = win.Element;
 (globalThis as any).Node = win.Node;
 (globalThis as any).SVGElement = win.SVGElement;
+(globalThis as any).DocumentFragment = win.DocumentFragment;
 (globalThis as any).MutationObserver = win.MutationObserver;
 (globalThis as any).ResizeObserver = class ResizeObserver {
   observe() {}
@@ -26,7 +27,12 @@ const win = new Window({ url: "http://localhost/" });
 
 const { default: GoalEvaluatorSettings, buildGoalConfigPatch } = await import("./GoalEvaluatorSettings");
 
+const realFetch = globalThis.fetch;
+(globalThis as any).fetch = async () => new Response(JSON.stringify({ models: [] }), { status: 200 });
 afterEach(() => cleanup());
+afterAll(() => {
+  globalThis.fetch = realFetch;
+});
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function renderPanel(overrides: Record<string, unknown> = {}, onSave = (_k: string, _v: unknown) => {}) {
@@ -51,34 +57,23 @@ describe("GoalEvaluatorSettings", () => {
     expect(getByLabelText("Minimum Runs Before Evaluating")).toBeDefined();
   });
 
-  test("offers no evaluator model picker", () => {
-    // The evaluator runs on the session's model so its judge call can read
-    // the conversation from the provider's prompt cache. Choosing a separate
-    // model here would silently opt out of that.
-    const { queryByLabelText } = renderPanel();
-    expect(queryByLabelText("Provider")).toBeNull();
-    expect(queryByLabelText("Model")).toBeNull();
+  test("exposes an evaluator model picker", () => {
+    const { getByLabelText } = renderPanel();
+    expect(getByLabelText("Evaluator Model")).toBeDefined();
   });
 
-  test("preserves a pinned evaluatorModel it no longer edits", () => {
-    // The pinned-model escape hatch lives in config.json only. Saving from
-    // this panel must not drop it.
-    const patch = buildGoalConfigPatch({
-      existing: { evaluatorModel: "ollama:qwen3", evaluatorMaxTokens: 512 },
-      maxTokens: 256,
-      evaluateEveryNTurns: 1,
-      minTurnsBeforeEvaluate: 1,
-    });
-
-    expect(patch.evaluatorModel).toBe("ollama:qwen3");
-    expect(patch.evaluatorMaxTokens).toBe(256);
+  test("saves a picked model and clears it for the session model", () => {
+    const base = { maxTokens: 256, evaluateEveryNTurns: 1, minTurnsBeforeEvaluate: 1 };
+    expect(buildGoalConfigPatch({ ...base, evaluatorModel: "ollama:qwen3" }).evaluatorModel).toBe("ollama:qwen3");
+    expect(buildGoalConfigPatch({ ...base, evaluatorModel: "__session__" }).evaluatorModel).toBeUndefined();
+    expect(buildGoalConfigPatch({ ...base, evaluatorModel: "" }).evaluatorModel).toBeUndefined();
   });
 
   test("omits cadence values that match the defaults", () => {
     // Defaults are left unset so a future change to them isn't frozen into
     // every user's config.
     const patch = buildGoalConfigPatch({
-      existing: {},
+      evaluatorModel: "__session__",
       maxTokens: 512,
       evaluateEveryNTurns: 1,
       minTurnsBeforeEvaluate: 1,
@@ -88,7 +83,7 @@ describe("GoalEvaluatorSettings", () => {
     expect(patch.minTurnsBeforeEvaluate).toBeUndefined();
 
     const custom = buildGoalConfigPatch({
-      existing: {},
+      evaluatorModel: "__session__",
       maxTokens: 512,
       evaluateEveryNTurns: 3,
       minTurnsBeforeEvaluate: 5,

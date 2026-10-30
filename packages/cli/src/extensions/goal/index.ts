@@ -107,12 +107,27 @@ function emitGoalStatusChanged(
     }
 }
 
+const GOAL_WAIT_TOOL = "goal_wait";
+
+type ToolLoadoutApi = Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">>;
+
+/** Only expose goal_wait while a goal is active, so the model can't call it without one. */
+function syncGoalWaitTool(pi: ToolLoadoutApi, active: boolean): void {
+    if (!pi.getActiveTools || !pi.setActiveTools) return;
+    const tools = pi.getActiveTools();
+    const has = tools.includes(GOAL_WAIT_TOOL);
+    if (active && !has) pi.setActiveTools([...tools, GOAL_WAIT_TOOL]);
+    else if (!active && has) pi.setActiveTools(tools.filter((t) => t !== GOAL_WAIT_TOOL));
+}
+
+
 function broadcastGoalStatus(
     sessionId: string,
     state: GoalState | undefined,
     ctx: ExtensionContext,
-    pi: Pick<ExtensionAPI, "sendMessage" | "appendEntry" | "events">,
+    pi: Pick<ExtensionAPI, "sendMessage" | "appendEntry" | "events"> & ToolLoadoutApi,
 ): void {
+    syncGoalWaitTool(pi, state?.status === "active");
     if (state?.status === "active") {
         ctx.ui.setStatus("goal", formatCompactGoalStatus(state));
         emitGoalStatusChanged(pi, toMetaGoalStatus(state));
@@ -547,7 +562,9 @@ async function runGoalStopCheck(
 
 export const goalExtension: ExtensionFactory = (pi) => {
     pi.registerTool({
-        name: "goal_wait",
+        name: GOAL_WAIT_TOOL,
+        // Activated by syncGoalWaitTool only while a goal is active.
+        defaultActive: false,
         label: "Wait for goal progress",
         description: "Pause an active /goal's automatic continuation when no useful work remains until external input arrives. Supply why you are blocked and the expected wake-up event, then finish your response. Incoming user messages, child results, background completions, and triggers can resume work. This does not schedule a timer or subscribe to events: arrange a notification first, or ask the user for the missing input. Do not poll or repeat waiting messages.",
         parameters: Type.Object({
@@ -633,6 +650,25 @@ export const goalExtension: ExtensionFactory = (pi) => {
             capturedAt: Date.now(),
         });
         return undefined;
+    });
+
+    // Manual /compact aborts the current run, and runGoalStopCheck ignores
+    // aborted runs, so nothing would restart the loop. Once compaction has
+    // settled, resume the goal if the session is idle with nothing queued.
+    // Mid-run (threshold/overflow) compactions leave the run going or a
+    // continuation queued, so the idle check skips them.
+    pi.on("session_compact", (_event, ctx) => {
+        const sessionId = getSessionId(ctx);
+        setTimeout(() => {
+            const state = getGoal(sessionId);
+            if (!state || state.status !== "active" || state.waiting) return;
+            if (!ctx.isIdle() || ctx.hasPendingMessages() || hasActiveSubagents()) return;
+            if (enforceBudget(sessionId, state, pi)) {
+                broadcastGoalStatus(sessionId, getGoal(sessionId), ctx, pi);
+                return;
+            }
+            steerContinuation(sessionId, state, pi);
+        }, 0);
     });
 
     pi.on("turn_end", async (event, ctx) => {
