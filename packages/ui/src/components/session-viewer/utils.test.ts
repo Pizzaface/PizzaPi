@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
     detectInFlightTools,
     hasVisibleContent,
+    mergeAdjacentTextBlocks,
     tryParseJsonObject,
     normalizeToolName,
     extractTextFromToolContent,
@@ -560,5 +561,27 @@ describe("resolveCommandPopoverState", () => {
         expect(resolveCommandPopoverState("mcp ", knownWithMcp, keepOpenWithMcp)).toEqual({ open: true, query: "mcp " });
         expect(resolveCommandPopoverState("mcp reload", knownWithMcp, keepOpenWithMcp)).toEqual({ open: true, query: "mcp reload" });
         expect(resolveCommandPopoverState("mcp re", knownWithMcp, keepOpenWithMcp)).toEqual({ open: true, query: "mcp re" });
+    });
+});
+
+describe("mergeAdjacentTextBlocks", () => {
+    test("joins citation-split text fragments, keeps other blocks separate", () => {
+        const search = { type: "text", text: "", _webSearchResult: {} };
+        const tool = { type: "toolCall", name: "x" };
+        expect(mergeAdjacentTextBlocks([
+            { type: "text", text: "says a neuron " },
+            { type: "text", text: "\"can predict\"" },
+            { type: "text", text: ", and more." },
+            search,
+            { type: "text", text: "after" },
+            tool,
+            { type: "text", text: "end" },
+        ])).toEqual([
+            { type: "text", text: "says a neuron \"can predict\", and more." },
+            search,
+            { type: "text", text: "after" },
+            tool,
+            { type: "text", text: "end" },
+        ]);
     });
 });

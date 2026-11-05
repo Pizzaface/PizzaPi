@@ -51,6 +51,26 @@ export function hasVisibleContent(content: unknown): boolean {
   return true;
 }
 
+/**
+ * Anthropic splits text at every citation boundary into separate text blocks.
+ * Glue adjacent plain text blocks so they render as one flow instead of one
+ * paragraph per fragment. Server-tool metadata blocks are left alone.
+ */
+export function mergeAdjacentTextBlocks(content: unknown[]): unknown[] {
+  const isPlainText = (b: unknown): b is { type: "text"; text: string } => {
+    if (!b || typeof b !== "object") return false;
+    const r = b as Record<string, unknown>;
+    return r.type === "text" && typeof r.text === "string" && !r._serverToolUse && !r._webSearchResult;
+  };
+  const out: unknown[] = [];
+  for (const block of content) {
+    const prev = out[out.length - 1];
+    if (isPlainText(block) && isPlainText(prev)) out[out.length - 1] = { ...prev, text: prev.text + block.text };
+    else out.push(block);
+  }
+  return out;
+}
+
 export function tryParseJsonObject(text: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(text);

@@ -17,6 +17,7 @@ import {
   ReasoningContent,
 } from "@/components/ai-elements/reasoning";
 import {
+  mergeAdjacentTextBlocks,
   normalizeToolName,
 } from "@/components/session-viewer/utils";
 import type { SubAgentTurn, NestedToolCalls } from "@/components/session-viewer/types";
@@ -176,9 +177,10 @@ export function renderContent(
   }
 
   if (Array.isArray(content)) {
+    const blocks = mergeAdjacentTextBlocks(content);
     return (
       <div className="flex flex-col gap-2">
-        {content.map((block, i) => {
+        {blocks.map((block, i) => {
           if (!block || typeof block !== "object") {
             return (
               <pre
@@ -210,7 +212,7 @@ export function renderContent(
           }
 
           if (b.type === "thinking") {
-            const isLastBlock = i === (content as unknown[]).length - 1;
+            const isLastBlock = i === blocks.length - 1;
             const thinkingIsStreaming = isLastBlock && (isThinkingActive ?? false);
             const thinkingDuration = typeof b.durationSeconds === "number" ? b.durationSeconds : undefined;
             const thinkingText = typeof b.thinking === "string" ? b.thinking : "";
