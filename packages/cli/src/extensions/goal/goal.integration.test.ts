@@ -16,7 +16,7 @@
  * network call via `mock.module` so no real API requests are made.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
@@ -31,7 +31,7 @@ import { _setGlobalConfigDir } from "../../config/io.js";
 import { goalExtension } from "./index.js";
 import { getGoal, getPendingGuidance, resetSession, formatGoalStatus, toMetaGoalStatus } from "./state.js";
 import { parseLlmVerdict } from "./evaluator.js";
-import { isCacheReuseViable, resetSessionContext } from "./session-context.js";
+import { resetSessionContext } from "./session-context.js";
 
 // ── Mock the network path for the LLM evaluator ──────────────────────────────
 
@@ -120,6 +120,19 @@ function createFakePi(): FakePi {
     return { pi, handlers, messages, userMessages, entries, events, commands, tools };
 }
 
+const HAIKU_MODEL = {
+    provider: "anthropic",
+    id: "claude-haiku-4-5",
+    name: "Claude Haiku 4.5",
+    api: "anthropic-messages",
+    baseUrl: "",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 4096,
+};
+
 function createFakeCtx(overrides: {
     cwd?: string;
     entries?: SessionEntry[];
@@ -135,22 +148,11 @@ function createFakeCtx(overrides: {
             getEntries: () => overrides.entries ?? [],
         },
         modelRegistry: {
-            getAll: () => [{
-                provider: "anthropic",
-                id: "claude-haiku-4-5",
-                name: "Claude Haiku 4.5",
-                api: "anthropic-messages",
-                baseUrl: "",
-                reasoning: false,
-                input: ["text"],
-                cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: 200_000,
-                maxTokens: 4096,
-            }],
+            getAll: () => [HAIKU_MODEL],
             hasConfiguredAuth: () => true,
             getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "fake-api-key", headers: {} }),
         },
-        model: overrides.model,
+        model: "model" in overrides ? overrides.model : HAIKU_MODEL,
         signal: overrides.signal ?? undefined,
         shutdown: overrides.shutdown ?? (() => {}),
         ui: {
@@ -437,6 +439,57 @@ describe("/goal multi-turn integration", () => {
         ]) expect(parseLlmVerdict(JSON.stringify(verdict)).verdict).toBe("uncertain");
     });
 
+    test("goal_wait is only active while a goal is active", async () => {
+        const { pi, commands } = createFakePi();
+        let active = ["bash"];
+        (pi as any).getActiveTools = () => active;
+        (pi as any).setActiveTools = (names: string[]) => { active = names; };
+        const ctx = createFakeCtx({ cwd: tmpCwd });
+        goalExtension(pi);
+
+        await commands.get("goal")!('"tests pass" --evaluator keyword --keyword "tests pass"', ctx as ExtensionCommandContext);
+        expect(active).toEqual(["bash", "goal_wait"]);
+
+        await commands.get("goal")!("clear", ctx as ExtensionCommandContext);
+        expect(active).toEqual(["bash"]);
+    });
+
+    test("manual compaction resumes an active goal once the session is idle", async () => {
+        const { pi, handlers, commands, userMessages } = createFakePi();
+        let idle = true;
+        let pending = false;
+        const ctx = Object.assign(createFakeCtx({ cwd: tmpCwd }), {
+            isIdle: () => idle,
+            hasPendingMessages: () => pending,
+        });
+        goalExtension(pi);
+        await commands.get("goal")!('"tests pass" --evaluator keyword --keyword "tests pass"', ctx as ExtensionCommandContext);
+        const compact = async () => {
+            for (const h of handlers.get("session_compact") ?? []) await h({ type: "session_compact" }, ctx);
+            await new Promise((r) => setTimeout(r, 5));
+        };
+
+        userMessages.length = 0;
+        await compact();
+        expect(userMessages).toHaveLength(1);
+        expect(userMessages[0]!.content).toContain("tests pass");
+
+        // Mid-run or already-queued continuation: don't double-nudge.
+        userMessages.length = 0;
+        idle = false;
+        await compact();
+        idle = true;
+        pending = true;
+        await compact();
+        expect(userMessages).toHaveLength(0);
+
+        // Waiting goals stay waiting.
+        pending = false;
+        await commands.get("goal")!("pause", ctx as ExtensionCommandContext);
+        await compact();
+        expect(userMessages).toHaveLength(0);
+    });
+
     test("keyword evaluator loop: unmet → guidance → agent acts → goal cleared", async () => {
         const { pi, handlers, messages, entries, events, commands, userMessages } = createFakePi();
         const shutdown = mock(() => {});
@@ -648,12 +701,26 @@ describe("/goal multi-turn integration", () => {
         expect(context.messages).toHaveLength(2);
         expect(context.messages[1]!.role).toBe("user");
 
-        // The cache read was non-zero, so the path stays enabled.
-        expect(isCacheReuseViable("goal-integration-session")).toBe(true);
         expect(getGoal("goal-integration-session")?.evaluations.at(-1)?.verdict).toBe("not_met");
     });
 
-    test("falls back to a standalone cheap-model call once the cache misses", async () => {
+    test("judges on the session model without a captured prefix, and when a pinned model is unusable", async () => {
+        writeFileSync(join(tmpHome, "config.json"), JSON.stringify({ goal: { evaluatorModel: "nope:missing" } }));
+        const { pi, commands, handlers } = createFakePi();
+        const sessionModel = { ...HAIKU_MODEL, id: "claude-sonnet-4-5", cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 } };
+        const ctx = createFakeCtx({ cwd: tmpCwd, model: sessionModel });
+
+        goalExtension(pi);
+        await commands.get("goal")!('"services are green" --min-turns 1', ctx as ExtensionCommandContext);
+        // No `context` event fired, so there is no prefix to reuse.
+        await runTurnEnd(handlers, ctx, 1, "I restarted the services.");
+
+        expect(fakeCompleteSimple).toHaveBeenCalledTimes(1);
+        const [model] = fakeCompleteSimple.mock.calls[0] as unknown as [{ id: string }];
+        expect(model.id).toBe("claude-sonnet-4-5");
+    });
+
+    test("keeps judging on the session model with the session context after a cache miss", async () => {
         const { pi, handlers, commands } = createFakePi();
         const sessionModel = {
             provider: "anthropic",
@@ -689,25 +756,20 @@ describe("/goal multi-turn integration", () => {
         }));
 
         await runTurnEnd(handlers, ctx, 1, "I restarted the services.");
-        expect(isCacheReuseViable("goal-integration-session")).toBe(false);
 
-        // Run 2: no longer worth re-sending the conversation at full price on
-        // the session model — fall back to the cheapest authenticated model
-        // with a standalone transcript.
+        // Run 2: a miss never swaps the judge to another model.
         for (const handler of handlers.get("context") ?? []) {
             await handler({ type: "context", messages: [{ role: "user", content: "check again", timestamp: 3 }] } as never, ctx);
         }
         await runTurnEnd(handlers, ctx, 2, "Still restarting.");
 
         expect(fakeCompleteSimple).toHaveBeenCalledTimes(2);
-        const [fallbackModel, fallbackContext] = fakeCompleteSimple.mock.calls[1] as unknown as [
+        const [secondModel, secondContext] = fakeCompleteSimple.mock.calls[1] as unknown as [
             { id: string },
             { systemPrompt?: string; messages: Array<{ content: unknown }> },
         ];
-        expect(fallbackModel.id).toBe("claude-haiku-4-5");
-        expect(fallbackContext.systemPrompt).toBeUndefined();
-        expect(fallbackContext.messages).toHaveLength(1);
-        expect(fallbackContext.messages[0]!.content as string).toContain("Conversation so far:");
+        expect(secondModel.id).toBe("claude-sonnet-4-5");
+        expect(secondContext.systemPrompt).toBe("session system prompt");
     });
 
     test("goal is not cleared until the condition is actually met", async () => {

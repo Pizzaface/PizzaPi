@@ -71,8 +71,6 @@ import {
 import {
     captureSessionContext,
     getCapturedSessionContext,
-    isCacheReuseViable,
-    recordCacheOutcome,
     resetSessionContext,
     snapshotActiveTools,
     toLlmMessages,
@@ -107,12 +105,27 @@ function emitGoalStatusChanged(
     }
 }
 
+const GOAL_WAIT_TOOL = "goal_wait";
+
+type ToolLoadoutApi = Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">>;
+
+/** Only expose goal_wait while a goal is active, so the model can't call it without one. */
+function syncGoalWaitTool(pi: ToolLoadoutApi, active: boolean): void {
+    if (!pi.getActiveTools || !pi.setActiveTools) return;
+    const tools = pi.getActiveTools();
+    const has = tools.includes(GOAL_WAIT_TOOL);
+    if (active && !has) pi.setActiveTools([...tools, GOAL_WAIT_TOOL]);
+    else if (!active && has) pi.setActiveTools(tools.filter((t) => t !== GOAL_WAIT_TOOL));
+}
+
+
 function broadcastGoalStatus(
     sessionId: string,
     state: GoalState | undefined,
     ctx: ExtensionContext,
-    pi: Pick<ExtensionAPI, "sendMessage" | "appendEntry" | "events">,
+    pi: Pick<ExtensionAPI, "sendMessage" | "appendEntry" | "events"> & ToolLoadoutApi,
 ): void {
+    syncGoalWaitTool(pi, state?.status === "active");
     if (state?.status === "active") {
         ctx.ui.setStatus("goal", formatCompactGoalStatus(state));
         emitGoalStatusChanged(pi, toMetaGoalStatus(state));
@@ -327,12 +340,11 @@ function steerContinuation(
  * failures degrade to an "uncertain" verdict (which never auto-continues)
  * rather than throwing out of the turn handler.
  *
- * Preference order for the LLM evaluator:
- *   1. Reuse the session's own context on the session's model, so the judge
- *      call reads the conversation from the provider's prompt cache.
- *   2. A standalone prompt on the cheapest authenticated model, used when
- *      there is no captured prefix, when a model is explicitly pinned, or
- *      once a cache miss has proved the prefix doesn't match.
+ * The judge runs on the session's currently selected model unless
+ * `goal.evaluatorModel` pins another one. On the session model it reuses the
+ * session's own context so the conversation is read from the provider's
+ * prompt cache; a pinned model (or no captured prefix yet) gets a standalone
+ * transcript prompt instead.
  */
 async function resolveEvaluator(
     sessionId: string,
@@ -352,39 +364,45 @@ async function resolveEvaluator(
     });
 
     try {
-        const captured = getCapturedSessionContext(sessionId);
-        const canReuseSession =
-            !config.evaluatorModel &&
-            captured !== undefined &&
-            captured.messages.length > 0 &&
-            isCacheReuseViable(sessionId) &&
-            ctx.model !== undefined &&
-            ctx.modelRegistry.hasConfiguredAuth(ctx.model);
-
-        if (canReuseSession && ctx.model) {
-            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-            if (auth.ok) {
-                return createSessionCacheEvaluator({
+        if (config.evaluatorModel) {
+            const pinned = await resolveEvaluatorModel(ctx.modelRegistry, config.evaluatorModel);
+            if (pinned) {
+                return createLlmGoalEvaluator({
                     completeSimple,
-                    model: ctx.model,
-                    apiKey: auth.apiKey,
+                    model: pinned.model,
+                    apiKey: pinned.apiKey,
                     maxTokens: config.evaluatorMaxTokens,
                     signal: ctx.signal,
-                    captured: captured!,
                 });
             }
+            log.warn(`Pinned goal evaluator model ${config.evaluatorModel} is unavailable; using the session model.`);
         }
 
-        const resolved = await resolveEvaluatorModel(ctx.modelRegistry, config.evaluatorModel);
-        if (!resolved) {
-            const reason = "No configured evaluator model with auth is available; skipping LLM evaluation.";
+        const model = ctx.model;
+        if (!model) return uncertain("No session model is selected; skipping LLM evaluation.");
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        if (!auth.ok) {
+            const reason = `Session model ${model.provider}/${model.id} has no usable auth; skipping LLM evaluation.`;
             log.warn(reason);
             return uncertain(reason);
         }
+
+        const captured = getCapturedSessionContext(sessionId);
+        if (captured && captured.messages.length > 0) {
+            return createSessionCacheEvaluator({
+                completeSimple,
+                model,
+                apiKey: auth.apiKey,
+                maxTokens: config.evaluatorMaxTokens,
+                signal: ctx.signal,
+                captured,
+                sessionId: ctx.sessionManager.getSessionId(),
+            });
+        }
         return createLlmGoalEvaluator({
             completeSimple,
-            model: resolved.model,
-            apiKey: resolved.apiKey,
+            model,
+            apiKey: auth.apiKey,
             maxTokens: config.evaluatorMaxTokens,
             signal: ctx.signal,
         });
@@ -483,15 +501,6 @@ async function runGoalStopCheck(
             }
             return;
         }
-        // Verify the shared-prefix assumption instead of trusting it. A miss
-        // means we just paid full input price on the session model, so this
-        // session stops reusing the session context from here on.
-        if (feedback.cacheReadTokens !== undefined && recordCacheOutcome(sessionId, feedback.cacheReadTokens)) {
-            log.warn(
-                "Goal evaluator reused the session context but the provider reported no cache read; " +
-                "falling back to a standalone evaluator call for the rest of this session.",
-            );
-        }
         state = recordEvaluation(sessionId, feedback, pi) ?? state;
     } catch (err) {
         if (!stillCurrent() || ctx.signal?.aborted) return;
@@ -547,7 +556,9 @@ async function runGoalStopCheck(
 
 export const goalExtension: ExtensionFactory = (pi) => {
     pi.registerTool({
-        name: "goal_wait",
+        name: GOAL_WAIT_TOOL,
+        // Activated by syncGoalWaitTool only while a goal is active.
+        defaultActive: false,
         label: "Wait for goal progress",
         description: "Pause an active /goal's automatic continuation when no useful work remains until external input arrives. Supply why you are blocked and the expected wake-up event, then finish your response. Incoming user messages, child results, background completions, and triggers can resume work. This does not schedule a timer or subscribe to events: arrange a notification first, or ask the user for the missing input. Do not poll or repeat waiting messages.",
         parameters: Type.Object({
@@ -624,7 +635,6 @@ export const goalExtension: ExtensionFactory = (pi) => {
         const sessionId = getSessionId(ctx);
         const state = getGoal(sessionId);
         if (!state || state.status !== "active" || state.condition.evaluator !== "llm") return undefined;
-        if (!isCacheReuseViable(sessionId)) return undefined;
 
         captureSessionContext(sessionId, {
             systemPrompt: ctx.getSystemPrompt(),
@@ -633,6 +643,25 @@ export const goalExtension: ExtensionFactory = (pi) => {
             capturedAt: Date.now(),
         });
         return undefined;
+    });
+
+    // Manual /compact aborts the current run, and runGoalStopCheck ignores
+    // aborted runs, so nothing would restart the loop. Once compaction has
+    // settled, resume the goal if the session is idle with nothing queued.
+    // Mid-run (threshold/overflow) compactions leave the run going or a
+    // continuation queued, so the idle check skips them.
+    pi.on("session_compact", (_event, ctx) => {
+        const sessionId = getSessionId(ctx);
+        setTimeout(() => {
+            const state = getGoal(sessionId);
+            if (!state || state.status !== "active" || state.waiting) return;
+            if (!ctx.isIdle() || ctx.hasPendingMessages() || hasActiveSubagents()) return;
+            if (enforceBudget(sessionId, state, pi)) {
+                broadcastGoalStatus(sessionId, getGoal(sessionId), ctx, pi);
+                return;
+            }
+            steerContinuation(sessionId, state, pi);
+        }, 0);
     });
 
     pi.on("turn_end", async (event, ctx) => {

@@ -10,11 +10,6 @@
  * `tools → system → messages`, in that order. A tools block that differs by
  * one entry (or one position) invalidates everything after it, so the numbers
  * below come from what pi actually sent, not from what we think it sent.
- *
- * Even so, a match is never assumed. `recordCacheOutcome` tracks whether the
- * provider reported a cache read; the evaluator stops using this path when it
- * doesn't, so a mismatch degrades to a cheap standalone call instead of
- * silently billing full-price transcripts against the session model.
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message, Tool } from "@earendil-works/pi-ai";
@@ -33,14 +28,6 @@ export interface CapturedSessionContext {
 
 const capturedBySessionId = new Map<string, CapturedSessionContext>();
 
-/**
- * Sessions where a cache-reusing evaluation ran but the provider reported no
- * cache read. Once a session lands here the evaluator stops reusing the
- * session context, because a miss means we would be re-sending the whole
- * conversation at full input price on the session's (often expensive) model.
- */
-const cacheMissBySessionId = new Set<string>();
-
 /** Replace the captured context for a session. Only the latest is kept. */
 export function captureSessionContext(sessionId: string, captured: CapturedSessionContext): void {
     capturedBySessionId.set(sessionId, captured);
@@ -50,31 +37,9 @@ export function getCapturedSessionContext(sessionId: string): CapturedSessionCon
     return capturedBySessionId.get(sessionId);
 }
 
-/**
- * Whether the cache-reusing evaluator path is still worth trying for this
- * session.
- */
-export function isCacheReuseViable(sessionId: string): boolean {
-    return !cacheMissBySessionId.has(sessionId);
-}
-
-/**
- * Record whether a cache-reusing evaluation actually read from the cache.
- *
- * Returns true when this call flipped the session to "not viable", so the
- * caller can log the downgrade exactly once.
- */
-export function recordCacheOutcome(sessionId: string, cacheReadTokens: number | undefined): boolean {
-    if ((cacheReadTokens ?? 0) > 0) return false;
-    if (cacheMissBySessionId.has(sessionId)) return false;
-    cacheMissBySessionId.add(sessionId);
-    return true;
-}
-
 /** Drop all captured state for a session. */
 export function resetSessionContext(sessionId: string): void {
     capturedBySessionId.delete(sessionId);
-    cacheMissBySessionId.delete(sessionId);
 }
 
 /**
@@ -87,9 +52,8 @@ export function resetSessionContext(sessionId: string): void {
  *
  * Approximates, not reproduces: a session whose `convertToLlm` rewrites a
  * custom message into a real one (rather than dropping it) will produce a
- * prefix that differs from what pi sent, and the cache won't hit. That is
- * exactly what `recordCacheOutcome` is for — the miss is detected on the
- * first evaluation and the session stops using this path.
+ * prefix that differs from what pi sent, and the cache won't hit; the judge
+ * call still works, it just pays full input price.
  */
 export function toLlmMessages(messages: AgentMessage[]): Message[] {
     return messages.filter(

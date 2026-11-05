@@ -3,7 +3,9 @@ import { Loader2, Save, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { SectionProps } from "./RunnerSettingsPanel";
+import { isRunnerChatModel } from "@/lib/message-helpers";
 
 /** Shape of the `goal` section in ~/.pizzapi/config.json. */
 interface GoalConfig {
@@ -12,6 +14,9 @@ interface GoalConfig {
     evaluateEveryNTurns?: number;
     minTurnsBeforeEvaluate?: number;
 }
+
+/** Select value for "no pinned model" (Radix Select can't use ""). */
+const SESSION_MODEL = "__session__";
 
 const DEFAULT_MAX_TOKENS = 512;
 const MIN_TOKENS = 1;
@@ -26,20 +31,17 @@ const DEFAULT_MIN_TURNS_BEFORE_EVALUATE = 1;
 const MIN_MIN_TURNS_BEFORE_EVALUATE = 0;
 
 /**
- * Build the `goal` config patch this panel saves.
- *
- * Pulled out of the component so the preservation rule below is testable
- * without driving the form: the panel no longer edits `evaluatorModel`, but a
- * save must not drop one the user set by hand in config.json.
+ * Build the `goal` config patch this panel saves. The daemon replaces the
+ * whole `goal` object, so an unset `evaluatorModel` clears any pinned model.
  */
 export function buildGoalConfigPatch(input: {
-    existing: GoalConfig;
+    evaluatorModel: string;
     maxTokens: number;
     evaluateEveryNTurns: number;
     minTurnsBeforeEvaluate: number;
 }): GoalConfig {
     return {
-        evaluatorModel: input.existing.evaluatorModel,
+        evaluatorModel: input.evaluatorModel && input.evaluatorModel !== SESSION_MODEL ? input.evaluatorModel : undefined,
         evaluatorMaxTokens: input.maxTokens || undefined,
         evaluateEveryNTurns:
             input.evaluateEveryNTurns === DEFAULT_EVALUATE_EVERY_N_TURNS ? undefined : input.evaluateEveryNTurns,
@@ -51,17 +53,18 @@ export function buildGoalConfigPatch(input: {
 /**
  * Goal evaluator settings.
  *
- * There is deliberately no model picker: the evaluator appends its judge
- * question to the session's own context and calls the session's model, so the
- * conversation is served from the provider's prompt cache instead of being
- * re-sent as a fresh transcript. Choosing a different model here would opt
- * out of that, which is why the escape hatch stays in `goal.evaluatorModel`
- * for the rare case that needs it (e.g. a local/private judge).
+ * The default ("Session model") appends the judge question to the session's
+ * own context so the provider's prompt cache serves the conversation. Pinning
+ * a model opts out of that and sends a standalone, truncated transcript.
  */
-export default function GoalEvaluatorSettings({ config, onSave, saving }: SectionProps) {
+export default function GoalEvaluatorSettings({ runnerId, config, onSave, saving }: SectionProps) {
     const goalConfig = (config.goal ?? {}) as GoalConfig;
+    const savedModel = goalConfig.evaluatorModel || SESSION_MODEL;
 
     // Form state
+    const [evaluatorModel, setEvaluatorModel] = useState<string>(savedModel);
+    const [models, setModels] = useState<{ provider: string; id: string; name?: string }[]>([]);
+    const [modelsError, setModelsError] = useState<string | null>(null);
     const [maxTokens, setMaxTokens] = useState<number>(goalConfig.evaluatorMaxTokens ?? DEFAULT_MAX_TOKENS);
     const [evaluateEveryNTurns, setEvaluateEveryNTurns] = useState<number>(
         goalConfig.evaluateEveryNTurns ?? DEFAULT_EVALUATE_EVERY_N_TURNS,
@@ -72,10 +75,27 @@ export default function GoalEvaluatorSettings({ config, onSave, saving }: Sectio
 
     // Re-sync form state if the saved config changes (e.g. after a save or refresh)
     useEffect(() => {
+        let cancelled = false;
+        fetch(`/api/runners/${encodeURIComponent(runnerId)}/models`)
+            .then(async (res) => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                if (!cancelled) setModels(Array.isArray(data.models) ? data.models.filter(isRunnerChatModel) : []);
+            })
+            .catch((err) => {
+                if (!cancelled) setModelsError(err instanceof Error ? err.message : String(err));
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [runnerId]);
+
+    useEffect(() => {
+        setEvaluatorModel(savedModel);
         setMaxTokens(goalConfig.evaluatorMaxTokens ?? DEFAULT_MAX_TOKENS);
         setEvaluateEveryNTurns(goalConfig.evaluateEveryNTurns ?? DEFAULT_EVALUATE_EVERY_N_TURNS);
         setMinTurnsBeforeEvaluate(goalConfig.minTurnsBeforeEvaluate ?? DEFAULT_MIN_TURNS_BEFORE_EVALUATE);
-    }, [goalConfig.evaluatorMaxTokens, goalConfig.evaluateEveryNTurns, goalConfig.minTurnsBeforeEvaluate]);
+    }, [savedModel, goalConfig.evaluatorMaxTokens, goalConfig.evaluateEveryNTurns, goalConfig.minTurnsBeforeEvaluate]);
 
     // Clamp max tokens to a sensible range
     const handleMaxTokensChange = (value: string) => {
@@ -109,7 +129,7 @@ export default function GoalEvaluatorSettings({ config, onSave, saving }: Sectio
         onSave(
             "goal",
             buildGoalConfigPatch({
-                existing: goalConfig,
+                evaluatorModel,
                 maxTokens,
                 evaluateEveryNTurns,
                 minTurnsBeforeEvaluate,
@@ -118,6 +138,7 @@ export default function GoalEvaluatorSettings({ config, onSave, saving }: Sectio
     };
 
     const isDirty =
+        evaluatorModel !== savedModel ||
         maxTokens !== (goalConfig.evaluatorMaxTokens ?? DEFAULT_MAX_TOKENS) ||
         evaluateEveryNTurns !== (goalConfig.evaluateEveryNTurns ?? DEFAULT_EVALUATE_EVERY_N_TURNS) ||
         minTurnsBeforeEvaluate !== (goalConfig.minTurnsBeforeEvaluate ?? DEFAULT_MIN_TURNS_BEFORE_EVALUATE);
@@ -126,8 +147,35 @@ export default function GoalEvaluatorSettings({ config, onSave, saving }: Sectio
         !saving && maxTokens >= MIN_TOKENS && evaluateEveryNTurns >= MIN_EVALUATE_EVERY_N_TURNS &&
         minTurnsBeforeEvaluate >= MIN_MIN_TURNS_BEFORE_EVALUATE;
 
+    const modelOptions = models.map((m) => `${m.provider}:${m.id}`);
+    // Keep a pinned model selectable even if this runner no longer lists it.
+    if (evaluatorModel !== SESSION_MODEL && !modelOptions.includes(evaluatorModel)) modelOptions.unshift(evaluatorModel);
+
     return (
         <div className="flex flex-col gap-6">
+            {/* Evaluator model */}
+            <div className="flex flex-col gap-2">
+                <Label htmlFor="evaluator-model">Evaluator Model</Label>
+                <Select value={evaluatorModel} onValueChange={setEvaluatorModel}>
+                    <SelectTrigger id="evaluator-model" className="w-full max-w-sm">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value={SESSION_MODEL}>Session model (uses prompt cache)</SelectItem>
+                        {modelOptions.map((value) => (
+                            <SelectItem key={value} value={value}>
+                                {value}
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                    {modelsError
+                        ? `Failed to load models: ${modelsError}`
+                        : "Default: the session's own model, which reads the conversation from the provider's prompt cache. Pinning a model sends it a standalone, truncated transcript instead."}
+                </p>
+            </div>
+
             {/* Max tokens input */}
             <div className="flex flex-col gap-2">
                 <Label htmlFor="evaluator-max-tokens">Max Tokens</Label>
@@ -181,8 +229,7 @@ export default function GoalEvaluatorSettings({ config, onSave, saving }: Sectio
             <div className="flex items-start gap-2 rounded-md border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
                 <Info className="mt-0.5 size-4 shrink-0" />
                 <span>
-                    The evaluator runs on your session&rsquo;s own model, reusing the conversation already cached by the
-                    provider — so there is no separate model to choose. Changes apply on next session start.
+                    Changes apply on next session start.
                 </span>
             </div>
 
