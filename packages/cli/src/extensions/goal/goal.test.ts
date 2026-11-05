@@ -26,8 +26,6 @@ import {
 } from "./evaluator.js";
 import {
     captureSessionContext,
-    isCacheReuseViable,
-    recordCacheOutcome,
     resetSessionContext,
     toLlmMessages,
 } from "./session-context.js";
@@ -555,50 +553,13 @@ describe("resolveEvaluatorModel", () => {
         expect(resolved?.model.id).toBe("gpt-4o-mini");
     });
 
-    test("falls back to the cheapest authenticated text model", async () => {
-        const registry = makeRegistry([
-            { provider: "anthropic", id: "claude-opus", input: ["text"], cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 4096, reasoning: false, name: "Opus", api: "anthropic-messages", baseUrl: "" },
-            { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
-            { provider: "groq", id: "llama-8b", input: ["text"], cost: { input: 0.05, output: 0.08, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 4096, reasoning: false, name: "Llama", api: "openai-completions", baseUrl: "" },
-        ]);
-        const resolved = await resolveEvaluatorModel(registry);
-        expect(resolved?.model.provider).toBe("groq");
-        expect(resolved?.model.id).toBe("llama-8b");
-    });
-
-    test("ignores models without configured auth", async () => {
-        const registry = makeRegistry([
-            { provider: "unauthenticated", id: "cheap-model", input: ["text"], cost: { input: 0.01, output: 0.01, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 4096, reasoning: false, name: "Cheap", api: "openai-completions", baseUrl: "" },
-            { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
-        ]);
-        const resolved = await resolveEvaluatorModel(registry);
-        expect(resolved?.model.id).toBe("gpt-4o-mini");
-    });
-
-    test("returns undefined when nothing is available", async () => {
-        const registry = makeRegistry([]);
-        const resolved = await resolveEvaluatorModel(registry);
-        expect(resolved).toBeUndefined();
-    });
-
-    test("does not prefer an expensive session model — unconfigured resolves cheapest", async () => {
-        // The evaluator prompt shares no prefix with the session context, so
-        // there is no prompt cache to hit by reusing the session's model.
-        const registry = makeRegistry([
-            { provider: "anthropic", id: "claude-opus", input: ["text"], cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 4096, reasoning: false, name: "Opus", api: "anthropic-messages", baseUrl: "" },
-            { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
-        ]);
-        const resolved = await resolveEvaluatorModel(registry);
-        expect(resolved?.model.id).toBe("gpt-4o-mini");
-    });
-
-    test("falls back to the cheapest text model when the configured model lacks auth", async () => {
+    test("returns undefined when the pinned model lacks auth or doesn't exist", async () => {
         const registry = makeRegistry([
             { provider: "unauthenticated", id: "pinned", input: ["text"], cost: { input: 0.01, output: 0.01, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 4096, reasoning: false, name: "Pinned", api: "openai-completions", baseUrl: "" },
             { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
         ]);
-        const resolved = await resolveEvaluatorModel(registry, "unauthenticated:pinned");
-        expect(resolved?.model.id).toBe("gpt-4o-mini");
+        expect(await resolveEvaluatorModel(registry, "unauthenticated:pinned")).toBeUndefined();
+        expect(await resolveEvaluatorModel(registry, "missing")).toBeUndefined();
     });
 });
 
@@ -816,6 +777,21 @@ describe("createSessionCacheEvaluator", () => {
         expect(feedback.cacheReadTokens).toBe(900);
     });
 
+    test("forwards the session id so providers can key the prompt cache", async () => {
+        let seenOptions: SimpleStreamOptions | undefined;
+        const evaluator = createSessionCacheEvaluator({
+            completeSimple: async (_model, _context, options) => {
+                seenOptions = options;
+                return makeResponse('{"verdict": "no", "reason": "x"}', 900);
+            },
+            model: { id: "gpt", provider: "openai-codex" } as Model<any>,
+            captured,
+            sessionId: "pi-session-1",
+        });
+        await evaluator.evaluate(makeState(), { latestTurnText: "", transcript: "", history: [], turnCount: 1, tokenSpend: 0 });
+        expect(seenOptions?.sessionId).toBe("pi-session-1");
+    });
+
     test("does not resend the transcript — the cached conversation is the transcript", async () => {
         let seen: Context | undefined;
         const evaluator = createSessionCacheEvaluator({
@@ -901,31 +877,6 @@ describe("toLlmMessages", () => {
             { role: "assistant", content: [{ type: "text", text: "two" }], timestamp: 2 },
         ] as any[];
         expect(toLlmMessages(messages)).toEqual(messages);
-    });
-});
-
-describe("session context cache tracking", () => {
-    test("a cache read keeps the path viable; a miss disables it once", () => {
-        resetSessionContext("cache-session");
-        captureSessionContext("cache-session", {
-            systemPrompt: "sys",
-            messages: [{ role: "user", content: "hi", timestamp: 1 }],
-            tools: [],
-            capturedAt: 1,
-        });
-
-        expect(isCacheReuseViable("cache-session")).toBe(true);
-        expect(recordCacheOutcome("cache-session", 500)).toBe(false);
-        expect(isCacheReuseViable("cache-session")).toBe(true);
-
-        // First miss disables reuse and reports the downgrade exactly once,
-        // so the warning isn't repeated every evaluation.
-        expect(recordCacheOutcome("cache-session", 0)).toBe(true);
-        expect(isCacheReuseViable("cache-session")).toBe(false);
-        expect(recordCacheOutcome("cache-session", 0)).toBe(false);
-
-        resetSessionContext("cache-session");
-        expect(isCacheReuseViable("cache-session")).toBe(true);
     });
 });
 

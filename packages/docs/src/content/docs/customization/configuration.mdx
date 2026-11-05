@@ -197,7 +197,7 @@ A documented subset of settings can also be overridden with **environment variab
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions within one parallel call. **Global config only.** |
 | `subagent.backgroundAfterSeconds` | — | — | Not supported. Use `bash.backgroundAfterSeconds` for shell auto-backgrounding. |
 | `subagent.keepLoadedTools` | — | — | Not supported. Use `toolSearch.keepLoadedTools` for deferred MCP tools. |
-| `goal.evaluatorModel` | `string` | the session's own model | Advanced: pin a model (`provider:modelId` or `modelId`) for the `/goal` LLM evaluator. Opts out of session-context cache reuse; falls back to the cheapest authenticated text model if the pinned model has no credentials. |
+| `goal.evaluatorModel` | `string` | the session's own model | Advanced: pin a model (`provider:modelId` or `modelId`) for the `/goal` LLM evaluator. Opts out of session-context cache reuse; falls back to the session's model if the pinned model has no credentials. |
 | `goal.evaluatorMaxTokens` | `number` | `512` | Maximum output tokens for each `/goal` evaluator call. |
 | `goal.evaluateEveryNTurns` | `number` | `1` | Default cadence for the LLM evaluator, in completed agent runs. `1` = every run. Ignored by the keyword evaluator. |
 | `goal.minTurnsBeforeEvaluate` | `number` | `1` | Minimum completed agent runs before the goal evaluator runs for the first time. |

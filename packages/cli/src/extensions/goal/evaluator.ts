@@ -5,7 +5,7 @@
  *
  * - `keywordGoalEvaluator`: fast, local keyword check.
  * - `createLlmGoalEvaluator(...)`: sends a compact transcript + goal to a
- *   small, fast model (default Anthropic Haiku) and parses a yes/no decision.
+ *   model (the session's, or a pinned one) and parses a yes/no decision.
  */
 import type {
     AssistantMessage,
@@ -199,6 +199,12 @@ export interface LlmEvaluatorDeps {
 export interface SessionCacheEvaluatorDeps extends LlmEvaluatorDeps {
     /** The session prefix to reuse, exactly as pi last sent it. */
     captured: CapturedSessionContext;
+    /**
+     * The id pi sends as `sessionId` on the session's own calls. Providers key
+     * their prompt cache on it (openai-codex `prompt_cache_key`); without it
+     * the judge call always misses and the evaluator downgrades for good.
+     */
+    sessionId?: string;
 }
 
 /**
@@ -270,6 +276,7 @@ export function createSessionCacheEvaluator(deps: SessionCacheEvaluatorDeps): Go
             };
             if (deps.apiKey) options.apiKey = deps.apiKey;
             if (deps.signal) options.signal = deps.signal;
+            if (deps.sessionId) options.sessionId = deps.sessionId;
 
             try {
                 const response = await deps.completeSimple(deps.model, modelContext, options);
@@ -302,7 +309,7 @@ export function createSessionCacheEvaluator(deps: SessionCacheEvaluatorDeps): Go
 }
 
 /**
- * Create an LLM-based goal evaluator backed by a small, fast model.
+ * Create an LLM-based goal evaluator that sends a standalone transcript prompt.
  */
 export function createLlmGoalEvaluator(deps: LlmEvaluatorDeps): GoalEvaluator {
     return {
@@ -353,58 +360,23 @@ export function createLlmGoalEvaluator(deps: LlmEvaluatorDeps): GoalEvaluator {
 }
 
 /**
- * Resolve a small, fast model to use for goal evaluation.
- *
- * This is the fallback path, used when the session prefix isn't available or
- * didn't hit the cache. Without a cache to share there is nothing to gain
- * from the session's model, so the cheapest authenticated text model wins:
- * the standalone prompt would otherwise bill a full transcript at the
- * session model's rate.
- *
- * If a model is configured (as `provider:modelId` or just `modelId`), it is
- * tried first. Otherwise the registry is searched for the cheapest available
- * text model that has configured auth. This avoids hardcoding Anthropic IDs
- * and works with any provider the user has set up.
+ * Resolve the pinned `goal.evaluatorModel` (`provider:modelId` or `modelId`)
+ * to a model with usable auth. Returns undefined when it can't be used; the
+ * caller then falls back to the session's selected model.
  */
 export async function resolveEvaluatorModel(
     registry: ModelRegistry,
-    configured?: string,
+    configured: string,
 ): Promise<{ model: Model<any>; apiKey?: string } | undefined> {
-    let candidates: Model<any>[] = [];
-
-    if (configured) {
-        const [providerPart, idPart] = configured.includes(":") ? configured.split(":") : [undefined, configured];
-        candidates = registry.getAll().filter((m) => {
-            if (providerPart && m.provider !== providerPart) return false;
-            return m.id === idPart;
-        });
-        // A configured-but-unusable model shouldn't silently disable the
-        // evaluator; fall back to the cheapest authenticated text model.
-        candidates = candidates.concat(findSmallFastModels(registry));
-    } else {
-        candidates = findSmallFastModels(registry);
-    }
-
+    const [providerPart, idPart] = configured.includes(":") ? configured.split(":") : [undefined, configured];
+    const candidates = registry.getAll().filter((m) => (!providerPart || m.provider === providerPart) && m.id === idPart);
     for (const model of candidates) {
         if (!registry.hasConfiguredAuth(model)) continue;
         const auth = await registry.getApiKeyAndHeaders(model);
         if (!auth.ok) continue;
         return { model, apiKey: auth.apiKey };
     }
-
     return undefined;
-}
-
-function findSmallFastModels(registry: ModelRegistry): Model<any>[] {
-    return registry
-        .getAll()
-        .filter((m) => m.input.includes("text") && !m.reasoning)
-        .sort((a, b) => {
-            const aCost = a.cost.input + a.cost.output;
-            const bCost = b.cost.input + b.cost.output;
-            if (aCost !== bCost) return aCost - bCost;
-            return a.contextWindow - b.contextWindow;
-        });
 }
 
 /**
