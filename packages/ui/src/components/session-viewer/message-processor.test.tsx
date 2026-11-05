@@ -356,10 +356,8 @@ describe("useMessageProcessor — fuzz equivalence under incremental appends", (
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Perf: a single full regroup of a large, mostly-invisible history must stay
-// well under the previous (buggy, window-expanding) implementation's reported
-// cost, and appending a small batch to an already-processed large history must
-// cost far less than reprocessing the whole thing from scratch.
+// Perf: cold rendering stays below the old window-expanding implementation's
+// bound, and appends reuse settled grouping without rereading raw contents.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function mostlyInvisible(n: number): RelayMessage[] {
@@ -374,9 +372,9 @@ function mostlyInvisible(n: number): RelayMessage[] {
   return messages;
 }
 
-function toolHeavy(n: number): RelayMessage[] {
+function toolHeavy(n: number, offset = 0): RelayMessage[] {
   const messages: RelayMessage[] = [];
-  for (let i = 0; i < n; i++) {
+  for (let i = offset; i < offset + n; i++) {
     messages.push({
       key: `tc-${i}`, role: "assistant", timestamp: i * 2,
       content: [{ type: "toolCall", id: `tc-${i}`, name: "bash", arguments: { n: i } }],
@@ -411,45 +409,40 @@ describe("useMessageProcessor — perf", () => {
   });
 
   test("appending a small batch to a large history doesn't reprocess the whole thing", () => {
-    // Measures appendMs by growing a hook's own history sample-by-sample (each
-    // sample is a genuinely new array so React's reference-equality memo can't
-    // short-circuit the measurement) and compares it against the cost of a
-    // from-scratch regroup of an equivalently-sized history.
-    function measureAppendMs(startSize: number, batchMs = 20, samples = 3): number {
-      let current = toolHeavy(startSize);
-      const { rerender } = renderHook(
+    // Count settled-content reads instead of comparing wall-clock ratios, which
+    // vary with CI scheduling and garbage collection. Reference validation and
+    // sorting may still scan the history; tool grouping must reuse its prefix.
+    for (const startSize of [20_000, 40_000]) {
+      let contentReads = 0;
+      let current: RelayMessage[] = toolHeavy(startSize).map((message) => ({
+        ...message,
+        get content() {
+          contentReads++;
+          return message.content;
+        },
+      }));
+      const { result, rerender, unmount } = renderHook(
         ({ messages }: { messages: RelayMessage[] }) => useMessageProcessor(messages, `append-perf-${startSize}`),
         { initialProps: { messages: current } },
       );
-      const times: number[] = [];
-      for (let i = 0; i < samples; i++) {
-        const batch = toolHeavy(batchMs).map((m, j) => ({ ...m, key: `${m.key}-append-${i}-${j}` }));
-        const next = current.concat(batch);
-        const start = performance.now();
-        rerender({ messages: next });
-        times.push(performance.now() - start);
-        current = next;
+      try {
+        // The session-change effect clears the mount's cache. Establish the
+        // settled cache on a new array before testing subsequent appends.
+        rerender({ messages: current.slice() });
+        expect(contentReads).toBeGreaterThan(0);
+        for (let i = 0; i < 3; i++) {
+          const batch = toolHeavy(20, startSize + i * 20);
+          const next = current.concat(batch);
+          contentReads = 0;
+          rerender({ messages: next });
+          expect(contentReads).toBe(0);
+          expect(result.current.visibleMessages).toEqual(oldPipelineVisible(next).slice(-50));
+          expect(result.current.visibleMessages.at(-1)?.toolCallId).toBe(batch.at(-1)?.toolCallId);
+          current = next;
+        }
+      } finally {
+        unmount();
       }
-      times.sort((a, b) => a - b);
-      return times[Math.floor(times.length / 2)]!;
     }
-
-    const coldMs = medianRenderMs(() => {
-      const fresh = toolHeavy(20_000); // 40k raw messages, the expensive (tool-pairing) case
-      const { unmount } = renderHook(() => useMessageProcessor(fresh, "append-perf-cold"));
-      unmount();
-    }, 3);
-
-    const appendMs = measureAppendMs(20_000);
-
-    // A from-scratch regroup of the 40k-message base costs `coldMs`. Appending
-    // 40 more messages on top of an already-settled history should cost a
-    // small fraction of that — if it doesn't, the cache isn't being reused.
-    expect(appendMs).toBeLessThan(Math.max(coldMs * 0.5, 5));
-
-    // Appending to a BIGGER settled history shouldn't cost meaningfully more —
-    // otherwise the "incremental" path is still secretly O(total size).
-    const appendMsBig = measureAppendMs(40_000); // 80k raw messages
-    expect(appendMsBig).toBeLessThan(appendMs * 3 + 5);
   });
 });
