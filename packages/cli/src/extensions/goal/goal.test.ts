@@ -24,11 +24,7 @@ import {
     createSessionCacheEvaluator,
     resolveEvaluatorModel,
 } from "./evaluator.js";
-import {
-    captureSessionContext,
-    resetSessionContext,
-    toLlmMessages,
-} from "./session-context.js";
+import { toLlmMessages } from "./session-context.js";
 import { extractLatestTurnText, buildTranscript } from "./transcript.js";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { GoalState, GoalVerdict } from "./types.js";
