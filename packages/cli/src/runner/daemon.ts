@@ -1893,6 +1893,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // viewers automatically when they connect to a session.
                 } catch (err) {
                     const message = err instanceof Error ? err.message : String(err);
+                    logWarn(`session ${sessionId} spawn failed: ${message}`);
                     emitChildFailure(message, classifySpawnFailure(message, null));
                 }
             };

@@ -1179,6 +1179,58 @@ describe("session-spawner child", () => {
         }
     });
 
+    test("a wake replaces a stale adopted entry whose suspended worker exited without IPC", async () => {
+        class FakeChild extends EventEmitter {
+            pid = 6001;
+            killed = false;
+            exitCode: number | null = null;
+            send = mock((_msg: unknown) => {});
+        }
+        const children: FakeChild[] = [];
+        const spawnMock = mock(() => {
+            const c = new FakeChild();
+            children.push(c);
+            return c;
+        });
+        mock.module("node:child_process", () => ({ ...realChildProcess, spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments: mock(async () => {}) }));
+        mock.module("./logger.js", () => ({ logInfo: mock(() => {}) }));
+        mock.module("./runner-usage-cache.js", () => ({
+            runnerUsageCacheFilePath: () => "/tmp/test-usage-cache.json",
+            trackSessionCwd: mock(() => {}),
+            untrackSessionCwd: mock(() => {}),
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
+        }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed: () => true }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: (_sessionId: string) => "/tmp/test-session-adopted-wake.procs",
+            readRecordedGroupPids: () => [],
+            recordSessionGroupPid: () => {},
+            removeSessionProcFile: () => {},
+        }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-adopted-wake-"));
+        try {
+            const runningSessions = new Map<string, any>([
+                ["sess-adopted", { sessionId: "sess-adopted", child: null, startedAt: 0, adopted: true }],
+            ]);
+            const args = ["k", "https://relay.example", tempCwd, runningSessions, new Set<string>(), new Set<string>(), undefined] as const;
+
+            // A plain (non-wake) spawn still refuses to clobber a live adopted session.
+            expect(() => spawnSession("sess-adopted", ...args)).toThrow("Session already running");
+            expect(children).toHaveLength(0);
+
+            spawnSession("sess-adopted", ...args, { isWake: true });
+            expect(children).toHaveLength(1);
+            expect(runningSessions.get("sess-adopted")?.child).toBe(children[0]);
+            expect(runningSessions.get("sess-adopted")?.adopted).toBeUndefined();
+        } finally {
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
     test("a wake deferred by a pending suspend is dropped if the session is killed before the old worker exits (review 994-r2 #1)", async () => {
         const isCwdAllowed = mock((_cwd: string | undefined) => true);
         class FakeChild extends EventEmitter {

@@ -391,7 +391,17 @@ export function spawnSession(
             existing.pendingWakeTimer = timer;
             return;
         }
-        throw new Error(`Session already running: ${sessionId}`);
+        // An adopted entry (its worker outlived a daemon restart) has no child
+        // handle or IPC channel: its pre_suspend never reaches us, and a
+        // suspend sends no session_ended, so the entry outlives the worker.
+        // The relay only wakes a session it holds as suspended/offline, so a
+        // wake proves the adopted worker is gone — replace the stale entry.
+        if (existing.adopted && !existing.child && options?.isWake) {
+            logInfo(`session ${sessionId} wake replaces stale adopted entry`);
+            runningSessions.delete(sessionId);
+        } else {
+            throw new Error(`Session already running: ${sessionId}`);
+        }
     }
 
     // Ensure the recorded-group pid file directory exists before the worker
